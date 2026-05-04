@@ -1,0 +1,112 @@
+# ============================================================
+# DATABASE MONITORING CONFIGURATION
+# Prometheus + Grafana Metrics
+# ============================================================
+
+# Datasource Metrics (HikariCP)
+spring.datasource.hikari.metrics.enabled=true
+spring.datasource.hikari.metrics.metric-names=hikari
+
+# Additional Metrics
+management.metrics.enable.hikaricp=true
+management.metrics.enable.jpa=true
+management.metrics.enable.hibernate=true
+
+# ============================================================
+# Key Metrics to Monitor:
+# ============================================================
+
+# 1. HikariCP Pool
+# - hikaricp_connections_active
+# - hikaricp_connections_idle
+# - hikaricp_connections_pending
+# - hikaricp_connections_max
+# - hikaricp_connections_min
+# - hikaricp_connections_acquire_seconds
+# - hikaricp_connections_creation_seconds
+# - hikaricp_connections_timeout_total_seconds
+
+# 2. Query Performance
+# - hibernate_seconds_total (query execution time)
+# - hibernate_entities_insert_total
+# - hibernate_entities_fetch_total
+# - hibernate_queries_executed_total
+
+# 3. Database Connection
+# - db_connections_active
+# - db_connections_idle
+# - db_wait_count_total
+
+# ============================================================
+# GRAFLANA DASHBOARD TEMPLATE (JSON)
+# ============================================================
+
+-- @visualization
+-- {
+--   "title": "PGP Database Monitoring",
+--   "panels": [
+--     {
+--       "title": "HikariCP Active Connections",
+--       "type": "graph",
+--       "targets": [
+--         { "expr": "hikaricp_connections_active{service='pgp'}", "legendFormat": "Active" },
+--         { "expr": "hikaricp_connections_idle{service='pgp'}", "legendFormat": "Idle" }
+--       ]
+--     },
+--     {
+--       "title": "Connection Acquisition Time",
+--       "type": "graph",
+--       "targets": [
+--         { "expr": "hikaricp_connections_acquire_seconds_p99{service='pgp'}", "legendFormat": "P99" }
+--       ]
+--     },
+--     {
+--       "title": "Query Execution Time",
+--       "type": "graph",
+--       "targets": [
+--         { "expr": "rate(hibernate_seconds_total{service='pgp'}[5m])", "legendFormat": "Query Time" }
+--       ]
+--     },
+--     {
+--       "title": "Slow Queries (>1s)",
+--       "type": "graph",
+--       "targets": [
+--         { "expr": "rate(hibernate_statements_seconds_count{service='pgp',le='1'}[5m])", "legendFormat": "Count" }
+--       ]
+--     }
+--   ]
+-- }
+
+-- ============================================================
+# ALERTING RULES (Prometheus)
+-- ============================================================
+
+-- groups:
+--   - name: database-alerts
+--     rules:
+--       - alert: HighConnectionPoolUsage
+--         expr: hikaricp_connections_active / hikaricp_connections_max > 0.8
+--         for: 5m
+--         labels:
+--           severity: warning
+--         annotations:
+--           summary: "High connection pool usage"
+--           description: "Active connections > 80% of max"
+--
+--       - alert: ConnectionPoolExhausted
+--         expr: hikaricp_connections_pending > 10
+--         for: 1m
+--         labels:
+--           severity: critical
+--         annotations:
+--           summary: "Connection pool exhausted"
+--           description: "Pending connections > 10"
+--
+--       - alert: SlowQueriesDetected
+--         expr: rate(hibernate_statements_seconds_count{le="1"}[5m]) > 10
+--         for: 5m
+--         labels:
+--           severity: warning
+--         annotations:
+--           summary: "Slow queries detected"
+--           description: "More than 10 queries taking > 1s per second"

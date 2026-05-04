@@ -1,0 +1,176 @@
+# ============================================================
+# CILIUM eBPF INGRESS (Production Recommended)
+# Since March 2026 - Nginx ingress deprecated on K8s
+# ============================================================
+
+# ============================================================
+# Install Cilium:
+# helm install cilium cilium/cilium \
+#   --namespace kube-system \
+#   --set ingressController.enabled=true \
+#   --set k8sServiceHost=YOUR_API_SERVER
+
+# ============================================================
+# CILIUM INGRESS
+# NOTE: Request body limits configured at:
+# 1. Cloud Load Balancer (AWS ALB) - recommended for production
+# 2. Spring Boot application.properties - fallback
+# ============================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pgp-gateway-ingress
+  namespace: pgp-crypto
+  annotations:
+    kubernetes.io/ingress.class: cilium
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    
+    # ⚠️ NOTE: Cilium eBPF doesn't support per-path body limits
+    # Configure at Cloud LB or Spring Boot level
+    
+spec:
+  ingressClassName: cilium
+  tls:
+  - hosts:
+    - pgp.datdevops.com
+    secretName: pgp-tls
+  rules:
+  - host: pgp.datdevops.com
+    http:
+      paths:
+      - path: /api/v1/crypto/encrypt
+        pathType: Prefix
+        backend:
+          service:
+            name: pgp-crypto-gateway
+            port:
+              number: 8080
+      - path: /api/v1/crypto/decrypt
+        pathType: Prefix
+        backend:
+          service:
+            name: pgp-crypto-gateway
+            port:
+              number: 8080
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: pgp-crypto-gateway
+            port:
+              number: 8080
+
+---
+# ============================================================
+# AWS ALB INGRESS (For AWS/EKS - Recommended for body limits)
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pgp-gateway-alb-ingress
+  namespace: pgp-crypto
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    
+    # ✅ Request body size limits (ALB level)
+    # Encrypt: 1MB, Decrypt: 2MB, Default: 512KB
+    alb.ingress.kubernetes.io/max-request-size: "1048576"
+    alb.ingress.kubernetes.io/max-response-size: "2097152"
+    
+    # Rate limiting (ALB level)
+    alb.ingress.kubernetes.io/threshold: 100
+    alb.ingress.kubernetes.io/unit: "rps"
+    
+    # Security
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-2016-08
+    
+spec:
+  ingressClassName: alb
+  tls:
+  - hosts:
+    - pgp.datdevops.com
+  rules:
+  - host: pgp.datdevops.com
+    http:
+      paths:
+      - path: /api/v1/crypto/encrypt
+        pathType: Prefix
+        backend:
+          service:
+            name: pgp-crypto-gateway
+            port:
+              number: 8080
+      - path: /api/v1/crypto/decrypt
+        pathType: Prefix
+        backend:
+          service:
+            name: pgp-crypto-gateway
+            port:
+              number: 8080
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: pgp-crypto-gateway
+            port:
+              number: 8080
+
+---
+# ============================================================
+# CILIUM NETWORK POLICY (eBPF-based)
+# ============================================================
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: pgp-crypto-policy
+  namespace: pgp-crypto
+spec:
+  endpointSelector:
+    matchLabels:
+      app: pgp-crypto-gateway
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        role: ingress
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP
+  egress:
+  - toServices:
+    - name: redis
+      namespace: pgp-crypto
+    - name: pgp-mariadb
+      namespace: pgp-crypto
+  - toCIDRGroups:
+    - cidr: 0.0.0.0/0
+      except:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+
+---
+# ============================================================
+# HUBBLE OBSERVABILITY (Cilium自带)
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hubble-ui
+  namespace: kube-system
+  annotations:
+    kubernetes.io/ingress.class: cilium
+spec:
+  rules:
+  - host: hubble.datdevops.com
+    http:
+      paths:
+      - path: /
+        backend:
+          service:
+            name: hubble-ui
+            port:
+              number: 80
