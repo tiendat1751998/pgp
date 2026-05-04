@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeAll;
 
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters;
+import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
@@ -38,8 +40,6 @@ public class Phase3SecureEnvelopeTest {
             encryptionService,
             signingService,
             signatureVerificationService,
-            keyPairGeneratorService,
-            rsaKeyPairGeneratorService,
             new ReplayProtectionService(),
             objectMapper
         );
@@ -100,14 +100,14 @@ public class Phase3SecureEnvelopeTest {
         
         SecureEnvelopeService envelopeService = createService();
         
-        String envelopeJson = envelopeService.encryptPayloadWithKeyPair(
+        String envelopeJson = envelopeService.encryptPayloadDirect(
             payloadBytes,
             "JSON",
             "BANK_A",
             "SENDER-FP",
             "BANK_B",
             "RECIP-FP",
-            senderPrivateKey,
+            new Ed25519PrivateKeyParameters(senderPrivateKey, 0),
             rsaPublicKey
         );
         
@@ -115,10 +115,10 @@ public class Phase3SecureEnvelopeTest {
         
         RSAKeyParameters rsaPrivateKey = rsaKeyPairGeneratorService.getPrivateKey(rsaKeyPair);
         
-        byte[] decryptedPayload = envelopeService.decryptPayload(
+        byte[] decryptedPayload = envelopeService.decryptPayloadDirect(
             envelopeJson,
             rsaPrivateKey,
-            keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded()
+            new Ed25519PublicKeyParameters(keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded(), 0)
         );
         
         assertEquals(payload, new String(decryptedPayload, StandardCharsets.UTF_8));
@@ -139,16 +139,16 @@ public class Phase3SecureEnvelopeTest {
         
         for (int i = 0; i < 5; i++) {
             String payload = "Message #" + i;
-            String envelopeJson = envelopeService.encryptPayloadWithKeyPair(
+            String envelopeJson = envelopeService.encryptPayloadDirect(
                 payload.getBytes(StandardCharsets.UTF_8),
                 "TEXT",
                 "BANK_A", "FP", "BANK_B", "FP",
-                senderPrivateKey, rsaPublicKey
+                new Ed25519PrivateKeyParameters(senderPrivateKey, 0), rsaPublicKey
             );
             
-            byte[] decrypted = envelopeService.decryptPayload(
+            byte[] decrypted = envelopeService.decryptPayloadDirect(
                 envelopeJson, rsaPrivateKey, 
-                keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded()
+                new Ed25519PublicKeyParameters(keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded(), 0)
             );
             
             assertEquals(payload, new String(decrypted, StandardCharsets.UTF_8));
@@ -169,11 +169,11 @@ public class Phase3SecureEnvelopeTest {
         
         SecureEnvelopeService envelopeService = createService();
         
-        String envelopeJson = envelopeService.encryptPayloadWithKeyPair(
+        String envelopeJson = envelopeService.encryptPayloadDirect(
             payload.getBytes(StandardCharsets.UTF_8),
             "RAW",
             "BANK_A", "ABCD1234", "BANK_B", "WXYZ5678",
-            senderPrivateKey, rsaPublicKey
+            new Ed25519PrivateKeyParameters(senderPrivateKey, 0), rsaPublicKey
         );
         
         SecureEnvelope envelope = objectMapper.readValue(envelopeJson, SecureEnvelope.class);

@@ -1,5 +1,6 @@
 package com.datdevops.pgp.controller;
 
+import com.datdevops.pgp.security.SenderContext;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.ConstraintViolationException;
@@ -93,9 +94,10 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleSecurityException(SecurityException ex) {
         String traceId = MDC.get("traceId");
         if (traceId == null) traceId = UUID.randomUUID().toString();
+        String senderId = SenderContext.getSenderId();
 
         error4xxCounter.increment();
-        log.warn("[SECURITY] traceId={} message={}", traceId, ex.getMessage());
+        log.warn("[SECURITY] traceId={} sender={} message={}", traceId, senderId, ex.getMessage());
 
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
                 "error", "Security Error",
@@ -108,9 +110,10 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleGenericException(Exception ex) {
         String traceId = MDC.get("traceId");
         if (traceId == null) traceId = UUID.randomUUID().toString();
+        String senderId = SenderContext.getSenderId();
 
         error5xxCounter.increment();
-        log.error("[INTERNAL_ERROR] traceId={} message={}", traceId, ex.getMessage(), ex);
+        log.error("[INTERNAL_ERROR] traceId={} sender={} message={}", traceId, senderId, ex.getMessage(), ex);
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
                 "error", "Internal Server Error",

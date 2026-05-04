@@ -20,6 +20,9 @@ import java.security.spec.RSAPrivateKeySpec;
 import java.security.spec.RSAPublicKeySpec;
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 
 @Service
 public class EncryptionService {
@@ -30,9 +33,19 @@ public class EncryptionService {
     private static final String RSA_TRANSFORMATION = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding";
 
     private final SecureRandom secureRandom;
+    private final Cache<String, PublicKey> publicKeyCache;
+    private final Cache<String, PrivateKey> privateKeyCache;
 
     public EncryptionService() {
         this.secureRandom = new SecureRandom();
+        this.publicKeyCache = Caffeine.newBuilder()
+                .maximumSize(1000)
+                .expireAfterAccess(1, TimeUnit.HOURS)
+                .build();
+        this.privateKeyCache = Caffeine.newBuilder()
+                .maximumSize(1000)
+                .expireAfterAccess(1, TimeUnit.HOURS)
+                .build();
     }
 
     public EncryptionResult encrypt(byte[] plaintext, byte[] key, byte[] associatedData) {
@@ -132,15 +145,31 @@ public class EncryptionService {
     }
 
     private PublicKey convertBCToJavaPublicKey(RSAKeyParameters bcKey) throws Exception {
+        String cacheKey = bcKey.getModulus().toString(16) + ":" + bcKey.getExponent().toString(16);
+        PublicKey cached = publicKeyCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        
         KeyFactory factory = KeyFactory.getInstance("RSA");
         RSAPublicKeySpec spec = new RSAPublicKeySpec(bcKey.getModulus(), bcKey.getExponent());
-        return factory.generatePublic(spec);
+        PublicKey generated = factory.generatePublic(spec);
+        publicKeyCache.put(cacheKey, generated);
+        return generated;
     }
 
     private PrivateKey convertBCToJavaPrivateKey(RSAKeyParameters bcKey) throws Exception {
+        String cacheKey = bcKey.getModulus().toString(16) + ":" + bcKey.getExponent().toString(16);
+        PrivateKey cached = privateKeyCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+
         KeyFactory factory = KeyFactory.getInstance("RSA");
         RSAPrivateKeySpec spec = new RSAPrivateKeySpec(bcKey.getModulus(), bcKey.getExponent());
-        return factory.generatePrivate(spec);
+        PrivateKey generated = factory.generatePrivate(spec);
+        privateKeyCache.put(cacheKey, generated);
+        return generated;
     }
 
     public static class EncryptionResult {

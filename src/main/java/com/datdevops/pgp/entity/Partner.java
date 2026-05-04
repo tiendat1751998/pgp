@@ -4,9 +4,12 @@ import jakarta.persistence.*;
 import com.datdevops.pgp.listener.EntityEncryptionListener;
 import com.datdevops.pgp.listener.Encrypted;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 
+/**
+ * Partner entity. Represents an external system (bank/fintech) connected via mTLS.
+ * Relationships to KeyVersion/AuditLog/EnvelopeLog are done via ownerId/senderId strings,
+ * not JPA associations, since this is M2M with no user model.
+ */
 @Entity
 @EntityListeners(EntityEncryptionListener.class)
 public class Partner {
@@ -40,26 +43,6 @@ public class Partner {
 
     private Instant createdAt;
     private Instant updatedAt;
-
-    @OneToOne(mappedBy = "partner", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private KeyMetadata keyMetadata;
-
-    @OneToMany(mappedBy = "partner", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<KeyVersion> keyVersions = new ArrayList<>();
-
-    @OneToMany(mappedBy = "partner", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<AuditLog> auditLogs = new ArrayList<>();
-
-    @OneToMany(mappedBy = "partner", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<EnvelopeLog> envelopeLogs = new ArrayList<>();
-
-    @ManyToMany
-    @JoinTable(
-        name = "partner_managers",
-        joinColumns = @JoinColumn(name = "partner_id"),
-        inverseJoinColumns = @JoinColumn(name = "user_id")
-    )
-    private List<User> managers = new ArrayList<>();
 
     public Partner() {}
 
@@ -96,14 +79,4 @@ public class Partner {
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
-    public KeyMetadata getKeyMetadata() { return keyMetadata; }
-    public void setKeyMetadata(KeyMetadata keyMetadata) { this.keyMetadata = keyMetadata; }
-    public List<KeyVersion> getKeyVersions() { return keyVersions; }
-    public void setKeyVersions(List<KeyVersion> keyVersions) { this.keyVersions = keyVersions; }
-    public List<AuditLog> getAuditLogs() { return auditLogs; }
-    public void setAuditLogs(List<AuditLog> auditLogs) { this.auditLogs = auditLogs; }
-    public List<EnvelopeLog> getEnvelopeLogs() { return envelopeLogs; }
-    public void setEnvelopeLogs(List<EnvelopeLog> envelopeLogs) { this.envelopeLogs = envelopeLogs; }
-    public List<User> getManagers() { return managers; }
-    public void setManagers(List<User> managers) { this.managers = managers; }
 }

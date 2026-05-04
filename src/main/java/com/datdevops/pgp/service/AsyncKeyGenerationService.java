@@ -24,6 +24,7 @@ public class AsyncKeyGenerationService {
     private final RSAKeyPairGeneratorService rsaKeyPairGeneratorService;
     private final KeyRotationService keyRotationService;
     private final AsyncJobRepository asyncJobRepository;
+    private final SecretEncryptionService secretEncryptionService;
 
     private final Map<String, AsyncJob> inMemoryJobs = new ConcurrentHashMap<>();
 
@@ -31,11 +32,13 @@ public class AsyncKeyGenerationService {
             KeyPairGeneratorService keyPairGeneratorService,
             RSAKeyPairGeneratorService rsaKeyPairGeneratorService,
             KeyRotationService keyRotationService,
-            AsyncJobRepository asyncJobRepository) {
+            AsyncJobRepository asyncJobRepository,
+            SecretEncryptionService secretEncryptionService) {
         this.keyPairGeneratorService = keyPairGeneratorService;
         this.rsaKeyPairGeneratorService = rsaKeyPairGeneratorService;
         this.keyRotationService = keyRotationService;
         this.asyncJobRepository = asyncJobRepository;
+        this.secretEncryptionService = secretEncryptionService;
     }
 
     public AsyncKeyGenerationService() {
@@ -43,6 +46,7 @@ public class AsyncKeyGenerationService {
         this.rsaKeyPairGeneratorService = new RSAKeyPairGeneratorService();
         this.keyRotationService = null;
         this.asyncJobRepository = null;
+        this.secretEncryptionService = null;
     }
 
     @Async("keyGenExecutor")
@@ -55,19 +59,30 @@ public class AsyncKeyGenerationService {
             long startTime = System.currentTimeMillis();
 
             if ("RSA".equalsIgnoreCase(keyType)) {
-                String keyId = keyRotationService.rotateRSAKey(entityId);
-                var keyVersions = keyRotationService.getKeyVersions(entityId);
-                var activeKey = keyRotationService.getActiveKey(entityId, "RSA");
+                var rsaKeyPair = rsaKeyPairGeneratorService.generateRSAKeyPair();
+                String publicKey = rsaKeyPairGeneratorService.getBase64PublicKey(rsaKeyPair);
+                String privateKey = rsaKeyPairGeneratorService.getBase64PrivateKey(rsaKeyPair);
+                String encryptedPrivateKey = secretEncryptionService != null ?
+                    secretEncryptionService.encrypt(privateKey) : privateKey;
 
-                if (activeKey != null) {
-                    job.setResult(activeKey.getRsaPublicKey());
+                if (keyRotationService != null) {
+                    keyRotationService.rotateRSAKey(entityId, publicKey, encryptedPrivateKey);
+                    var activeKey = keyRotationService.getActiveKey(entityId, "RSA");
+                    activeKey.ifPresent(key -> job.setResult(key.getPublicKey()));
                 }
             } else if ("ED25519".equalsIgnoreCase(keyType)) {
-                String keyId = keyRotationService.rotateEd25519Key(entityId);
-                var activeKey = keyRotationService.getActiveKey(entityId, "ED25519");
+                var ed25519KeyPair = keyPairGeneratorService.generateEd25519KeyPair();
+                byte[] publicKeyBytes = keyPairGeneratorService.getEd25519PublicKey(ed25519KeyPair).getEncoded();
+                byte[] privateKeyBytes = keyPairGeneratorService.getEd25519PrivateKey(ed25519KeyPair).getEncoded();
+                String publicKey = Base64.getEncoder().encodeToString(publicKeyBytes);
+                String privateKey = Base64.getEncoder().encodeToString(privateKeyBytes);
+                String encryptedPrivateKey = secretEncryptionService != null ?
+                    secretEncryptionService.encrypt(privateKey) : privateKey;
 
-                if (activeKey != null) {
-                    job.setResult(activeKey.getEd25519PublicKey());
+                if (keyRotationService != null) {
+                    keyRotationService.rotateEd25519Key(entityId, publicKey, encryptedPrivateKey);
+                    var activeKey = keyRotationService.getActiveKey(entityId, "ED25519");
+                    activeKey.ifPresent(key -> job.setResult(key.getPublicKey()));
                 }
             } else {
                 var ed25519KeyPair = keyPairGeneratorService.generateEd25519KeyPair();

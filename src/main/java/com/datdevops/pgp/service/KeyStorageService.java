@@ -107,15 +107,15 @@ private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$
     @Retry(name = "keyStorage")
     @Bulkhead(name = "keyAccess")
     public PrivateKey getPrivateKeyFromStore(String partnerId, String fileName, String alias, String password) throws Exception {
+        validateKeyOwnership(partnerId, fileName);
+
         String cacheKey = partnerId + ":" + fileName + ":" + alias;
         
-        // 1. Check RAM Cache First (to prevent disk I/O bottleneck)
         PrivateKey cachedKey = privateKeyCache.getIfPresent(cacheKey);
         if (cachedKey != null) {
             return cachedKey;
         }
         
-        // 2. Fallback to Disk Vault
         KeyStore keyStore = loadPartnerKeyStore(partnerId, fileName);
         PrivateKey privateKey = (PrivateKey) keyStore.getKey(alias, password.toCharArray());
         
@@ -126,12 +126,23 @@ private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$
         return privateKey;
     }
 
+    private void validateKeyOwnership(String partnerId, String fileName) {
+        String expectedFileName = partnerId + "-keystore.p12";
+        if (!expectedFileName.equals(fileName)) {
+            throw new SecurityException("Key access violation: cannot access keys of different sender");
+        }
+    }
+
     @Retry(name = "keyStorage")
     public void savePartnerKeyStore(String partnerId, String fileName, String alias, PrivateKey privateKey, Certificate[] chain, String password) throws Exception {
         if (lockService != null) {
             String lockResource = partnerId + ":" + fileName;
             lockService.executeWithLock(lockResource, () -> {
-                doSavePartnerKeyStore(partnerId, fileName, alias, privateKey, chain, password);
+                try {
+                    doSavePartnerKeyStore(partnerId, fileName, alias, privateKey, chain, password);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
                 return null;
             });
         } else {

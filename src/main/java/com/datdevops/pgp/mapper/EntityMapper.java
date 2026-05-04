@@ -22,19 +22,12 @@ public class EntityMapper {
         new CryptoConfig();
     }
 
-    public EncryptRequest toEncryptRequest(String senderId, String senderKeyFingerprint,
-            String recipientId, String recipientKeyFingerprint,
-            String recipientRSAPublicKey, String payload, String payloadType) {
-        return new EncryptRequest(senderId, senderKeyFingerprint,
-                recipientId, recipientKeyFingerprint, recipientRSAPublicKey, payload, payloadType);
-    }
-
     public EncryptResponse toEncryptResponse(SecureEnvelope envelope, String encryptedEnvelope) {
         return new EncryptResponse(envelope.getMessageId(), encryptedEnvelope, envelope.getTimestamp());
     }
 
-    public DecryptRequest toDecryptRequest(String envelope, String recipientRSAPrivateKey, String senderPublicKey) {
-        return new DecryptRequest(envelope, recipientRSAPrivateKey, senderPublicKey);
+    public DecryptRequest toDecryptRequest(String envelope, String senderPublicKey) {
+        return new DecryptRequest(envelope, senderPublicKey);
     }
 
     public RSAKeyParameters toRSAPublicKey(byte[] publicKeyBytes) throws Exception {

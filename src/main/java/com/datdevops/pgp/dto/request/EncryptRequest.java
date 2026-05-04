@@ -4,10 +4,6 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 public record EncryptRequest(
-    @NotBlank(message = "senderId is required")
-    @Size(max = 100, message = "senderId must not exceed 100 characters")
-    String senderId,
-
     @Size(max = 256, message = "senderKeyFingerprint must not exceed 256 characters")
     String senderKeyFingerprint,
 

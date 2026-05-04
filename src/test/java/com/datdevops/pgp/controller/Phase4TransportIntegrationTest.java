@@ -13,6 +13,9 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters;
+import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 public class Phase4TransportIntegrationTest {
@@ -40,10 +43,7 @@ public class Phase4TransportIntegrationTest {
             encryptionService,
             signingService,
             signatureVerificationService,
-            keyPairGeneratorService,
-            rsaKeyPairGeneratorService,
             new ReplayProtectionService(),
-            new KeyRotationService(),
             objectMapper
         );
     }
@@ -62,23 +62,23 @@ public class Phase4TransportIntegrationTest {
         
         SecureEnvelopeService envelopeService = createService();
         
-        String envelopeJson = envelopeService.encryptPayloadWithKeyPair(
+        String envelopeJson = envelopeService.encryptPayloadDirect(
             payloadBytes,
             "JSON",
             "BANK_A",
             "ABCD1234",
             "BANK_B",
             "WXYZ5678",
-            senderPrivateKey,
+            new Ed25519PrivateKeyParameters(senderPrivateKey, 0),
             rsaPublicKey
         );
         
         assertNotNull(envelopeJson);
         
-        byte[] decryptedBytes = envelopeService.decryptPayload(
+        byte[] decryptedBytes = envelopeService.decryptPayloadDirect(
             envelopeJson,
             rsaPrivateKey,
-            keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded()
+            new Ed25519PublicKeyParameters(keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded(), 0)
         );
         
         String decrypted = new String(decryptedBytes, StandardCharsets.UTF_8);
@@ -119,20 +119,20 @@ public class Phase4TransportIntegrationTest {
         
         SecureEnvelopeService envelopeService = createService();
         
-        String envelopeJson = envelopeService.encryptPayloadWithKeyPair(
+        String envelopeJson = envelopeService.encryptPayloadDirect(
             payload.getBytes(StandardCharsets.UTF_8),
             "TEXT",
             "SENDER", "FP", "RECIPIENT", "FP",
-            senderPrivateKey, rsaPublicKey
+            new Ed25519PrivateKeyParameters(senderPrivateKey, 0), rsaPublicKey
         );
         
         String encryptedEnvelopeBase64 = Base64.getEncoder().encodeToString(envelopeJson.getBytes(StandardCharsets.UTF_8));
         String decodedJson = new String(Base64.getDecoder().decode(encryptedEnvelopeBase64), StandardCharsets.UTF_8);
         
-        byte[] decryptedBytes = envelopeService.decryptPayload(
+        byte[] decryptedBytes = envelopeService.decryptPayloadDirect(
             decodedJson,
             rsaPrivateKey,
-            keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded()
+            new Ed25519PublicKeyParameters(keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded(), 0)
         );
         
         assertEquals(payload, new String(decryptedBytes, StandardCharsets.UTF_8));
@@ -165,16 +165,16 @@ public class Phase4TransportIntegrationTest {
         String[] payloads = {"Data 1", "Data 2", "Data 3"};
         
         for (String p : payloads) {
-            String envelopeJson = envelopeService.encryptPayloadWithKeyPair(
+            String envelopeJson = envelopeService.encryptPayloadDirect(
                 p.getBytes(StandardCharsets.UTF_8),
                 "TEXT",
                 "SENDER", "FP", "RECIPIENT", "FP",
-                senderPrivateKey, rsaPublicKey
+                new Ed25519PrivateKeyParameters(senderPrivateKey, 0), rsaPublicKey
             );
             
-            byte[] decrypted = envelopeService.decryptPayload(
+            byte[] decrypted = envelopeService.decryptPayloadDirect(
                 envelopeJson, rsaPrivateKey,
-                keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded()
+                new Ed25519PublicKeyParameters(keyPairGeneratorService.getEd25519PublicKey(senderKeyPair).getEncoded(), 0)
             );
             
             assertEquals(p, new String(decrypted, StandardCharsets.UTF_8));

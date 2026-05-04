@@ -2,70 +2,66 @@ package com.datdevops.pgp.entity;
 
 import jakarta.persistence.*;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 
 @Entity
-@Table(name = "key_versions")
 public class KeyVersion {
 
     @Id
-    private String id;
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "partner_id", nullable = false)
-    private Partner partner;
+    @Column(nullable = false)
+    private String ownerId;
 
+    @Column(nullable = false)
+    private Integer version;
+
+    @Column(nullable = false)
     private String keyType;
-    private String keyVersion;
+
+    @Column(length = 4096)
+    private String publicKey;
+
+    @Column(length = 4096)
+    private String privateKeyEncrypted;
+
+    @Column(nullable = false)
+    private boolean active = true;
+
+    private Instant validFrom;
+
+    private Instant validTo;
+
     private Instant createdAt;
-    private Instant expiresAt;
-    private boolean active;
-    private String fingerprint;
-    private String publicKeyData;
-    private String encryptedPrivateKey;
-    private boolean deprecated;
 
-    public KeyVersion() {
-        this.createdAt = Instant.now();
-        this.active = true;
-        this.deprecated = false;
-    }
-
-    public KeyVersion(Partner partner, String keyType, String keyVersion) {
-        this();
-        this.partner = partner;
-        this.keyType = keyType;
-        this.keyVersion = keyVersion;
-        this.id = partner.getId() + "-" + keyType + "-" + keyVersion;
-    }
+    private Instant rotatedAt;
 
     @PrePersist
     protected void onCreate() {
-        if (createdAt == null) createdAt = Instant.now();
-        if (id == null) id = partner.getId() + "-" + keyType + "-" + keyVersion;
+        createdAt = Instant.now();
+        validFrom = Instant.now();
     }
 
-    public String getId() { return id; }
-    public void setId(String id) { this.id = id; }
-    public Partner getPartner() { return partner; }
-    public void setPartner(Partner partner) { this.partner = partner; }
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public String getOwnerId() { return ownerId; }
+    public void setOwnerId(String ownerId) { this.ownerId = ownerId; }
+    public Integer getVersion() { return version; }
+    public void setVersion(Integer version) { this.version = version; }
     public String getKeyType() { return keyType; }
     public void setKeyType(String keyType) { this.keyType = keyType; }
-    public String getKeyVersion() { return keyVersion; }
-    public void setKeyVersion(String keyVersion) { this.keyVersion = keyVersion; }
-    public Instant getCreatedAt() { return createdAt; }
-    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
-    public Instant getExpiresAt() { return expiresAt; }
-    public void setExpiresAt(Instant expiresAt) { this.expiresAt = expiresAt; }
+    public String getPublicKey() { return publicKey; }
+    public void setPublicKey(String publicKey) { this.publicKey = publicKey; }
+    public String getPrivateKeyEncrypted() { return privateKeyEncrypted; }
+    public void setPrivateKeyEncrypted(String privateKeyEncrypted) { this.privateKeyEncrypted = privateKeyEncrypted; }
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
-    public String getFingerprint() { return fingerprint; }
-    public void setFingerprint(String fingerprint) { this.fingerprint = fingerprint; }
-    public String getPublicKeyData() { return publicKeyData; }
-    public void setPublicKeyData(String publicKeyData) { this.publicKeyData = publicKeyData; }
-    public String getEncryptedPrivateKey() { return encryptedPrivateKey; }
-    public void setEncryptedPrivateKey(String encryptedPrivateKey) { this.encryptedPrivateKey = encryptedPrivateKey; }
-    public boolean isDeprecated() { return deprecated; }
-    public void setDeprecated(boolean deprecated) { this.deprecated = deprecated; }
+    public Instant getValidFrom() { return validFrom; }
+    public void setValidFrom(Instant validFrom) { this.validFrom = validFrom; }
+    public Instant getValidTo() { return validTo; }
+    public void setValidTo(Instant validTo) { this.validTo = validTo; }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
+    public Instant getRotatedAt() { return rotatedAt; }
+    public void setRotatedAt(Instant rotatedAt) { this.rotatedAt = rotatedAt; }
 }

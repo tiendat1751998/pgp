@@ -2,9 +2,11 @@ package com.datdevops.pgp.entity;
 
 import jakarta.persistence.*;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
 
+/**
+ * Legacy entity — NOT USED in the M2M architecture.
+ * Kept only for schema compatibility. This system uses mTLS certificates, not user accounts.
+ */
 @Entity
 @Table(name = "users")
 public class User {
@@ -23,26 +25,9 @@ public class User {
     private Instant createdAt;
     private Instant updatedAt;
 
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<AuditLog> auditLogs = new ArrayList<>();
-
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
-    private List<EnvelopeLog> envelopeLogs = new ArrayList<>();
-
-    @ManyToMany(mappedBy = "managers")
-    private List<Partner> managedPartners = new ArrayList<>();
-
     public User() {
         this.createdAt = Instant.now();
         this.updatedAt = Instant.now();
-    }
-
-    public User(String username, String email, String passwordHash) {
-        this();
-        this.username = username;
-        this.email = email;
-        this.passwordHash = passwordHash;
-        this.active = true;
     }
 
     // Getters and Setters
@@ -62,10 +47,4 @@ public class User {
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
     public String getRole() { return role; }
     public void setRole(String role) { this.role = role; }
-    public List<AuditLog> getAuditLogs() { return auditLogs; }
-    public void setAuditLogs(List<AuditLog> auditLogs) { this.auditLogs = auditLogs; }
-    public List<EnvelopeLog> getEnvelopeLogs() { return envelopeLogs; }
-    public void setEnvelopeLogs(List<EnvelopeLog> envelopeLogs) { this.envelopeLogs = envelopeLogs; }
-    public List<Partner> getManagedPartners() { return managedPartners; }
-    public void setManagedPartners(List<Partner> managedPartners) { this.managedPartners = managedPartners; }
 }

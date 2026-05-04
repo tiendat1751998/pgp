@@ -33,7 +33,7 @@ public class CryptoGatewayBenchmark {
     @Setup
     public void setup() throws Exception {
         encryptionService = new EncryptionService();
-        keyStorageService = new KeyStorageService();
+        keyStorageService = new KeyStorageService(null);
         
         auditService = new AuditService();
         

@@ -184,6 +184,10 @@ public class PartnerService {
         return Collections.unmodifiableList(partnerRepository.findAll());
     }
 
+    public PartnerDto toPartnerDto(Partner partner) {
+        return entityMapper.toPartnerDto(partner);
+    }
+
     @CacheEvict(value = "partners", key = "#id")
     public void removePartner(String id) {
         partnerRepository.deleteById(id);
