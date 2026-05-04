@@ -1,0 +1,137 @@
+-- ============================================================
+-- HIGH AVAILABILITY & REPLICATION CONFIGURATION
+-- MariaDB/MySQL
+-- ============================================================
+
+-- ============================================================
+-- MASTER CONFIGURATION (my.cnf)
+-- ============================================================
+-- [mysqld]
+-- server-id = 1
+-- log_bin = /var/log/mysql/mariadb-bin
+-- binlog_format = ROW
+-- binlog_row_image = FULL
+-- binlog_checksum = CRC32
+-- sync_binlog = 1
+-- innodb_flush_log_at_trx_commit = 1
+-- expire_logs_days = 7
+-- max_binlog_size = 100M
+-- 
+-- # Performance
+-- innodb_buffer_pool_size = 4G
+-- innodb_log_file_size = 1G
+-- innodb_log_buffer_size = 64M
+-- innodb_flush_method = O_DIRECT
+-- 
+-- # Connection
+-- max_connections = 300
+-- thread_cache_size = 50
+
+-- ============================================================
+-- REPLICA CONFIGURATION (my.cnf)
+-- ============================================================
+-- [mysqld]
+-- server-id = 2
+-- relay_log = /var/log/mysql/mariadb-relay
+-- relay_log_purge = 1
+-- read_only = 1
+-- super_read_only = 1
+-- 
+-- # Replication safety
+-- relay_log_recovery = 1
+-- skip_slave_start = 0
+-- 
+-- # Performance tuning
+-- innodb_buffer_pool_size = 4G
+
+-- ============================================================
+-- CREATE REPLICATION USER (on Master)
+-- ============================================================
+CREATE USER IF NOT EXISTS 'pgp_repl'@'%' IDENTIFIED BY 'CHANGE_ME_STRONG_REPL_PASSWORD';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'pgp_repl'@'%';
+
+-- ============================================================
+-- SETUP REPLICATION COMMAND (on Replica)
+-- ============================================================
+-- CHANGE MASTER TO
+--     MASTER_HOST = 'master-hostname',
+--     MASTER_USER = 'pgp_repl',
+--     MASTER_PASSWORD = 'REPL_PASSWORD',
+--     MASTER_LOG_FILE = 'mariadb-bin.000001',
+--     MASTER_LOG_POS = 4,
+--     MASTER_CONNECT_RETRY = 10;
+-- 
+-- START SLAVE;
+-- SHOW SLAVE STATUS\G
+
+-- ============================================================
+-- FAILOVER SCRIPT (Orchestrator-style)
+-- ============================================================
+-- #!/bin/bash
+-- # Check if master is down and promote replica
+-- 
+-- MASTER_HOST="pgp-master.internal"
+-- REPLICA_HOST="pgp-replica.internal"
+-- VIP="10.0.0.100"
+-- 
+-- # Check master health
+-- if ! mysql -h $MASTER_HOST -e "SELECT 1" > /dev/null 2>&1; then
+--     echo "Master down! Promoting replica..."
+--     
+--     # Stop replication
+--     mysql -h $REPLICA_HOST -e "STOP SLAVE;"
+--     mysql -h $REPLICA_HOST -e "RESET SLAVE ALL;"
+--     
+--     # Update DNS/VIP
+--     aws route53 change-resource-record-sets \
+--         --hosted-zone-id ZONE_ID \
+--         --change-batch file://failover.json
+--     
+--     # Notify
+--     curl -X POST slack-webhook-url -d "{\"text\": \"FAILOVER: Promoted $REPLICA_HOST\"}"
+-- fi
+
+-- ============================================================
+-- READ/WRITE SPLITTING (Application Layer)
+-- ============================================================
+-- Configure in application.properties:
+-- # Write to master
+-- spring.datasource.hikari.jdbc-url=jdbc:mariadb://pgp-master:3306/pgpdb
+-- # Read from replica (round-robin or with Spring ReadReplicaInterceptor)
+-- spring.datasource.read-replica1=jdbc:mariadb://pgp-replica1:3306/pgpdb
+-- spring.datasource.read-replica2=jdbc:mariadb://pgp-replica2:3306/pgpdb
+
+-- ============================================================
+-- MONITORING: Replication Lag Check
+-- ============================================================
+-- mysql -e "SHOW SLAVE STATUS\G" | grep -E "Seconds_Behind_Master|IO_Running|SQL_Running"
+
+-- ============================================================
+-- AUTOMATIC FAILOVER WITH PROXYSQL/MARIADB MAXSCALE (Optional)
+-- ============================================================
+-- # MaxScale configuration example:
+-- [maxscale]
+-- threads=4
+-- 
+-- [pgp-master]
+-- type=server
+-- address=10.0.0.1
+-- port=3306
+-- protocol=MariaDB
+-- 
+-- [pgp-replica]
+-- type=server
+-- address=10.0.0.2
+-- port=3306
+-- protocol=MariaDB
+-- 
+-- [read-write-service]
+-- type=service
+-- router=readwritesplit
+-- servers=pgp-master,pgp-replica
+-- 
+-- [read-only-service]
+-- type=service
+-- router=readconnroute
+-- servers=pgp-replica
+-- router_options=slave

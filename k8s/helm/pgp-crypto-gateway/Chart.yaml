@@ -1,0 +1,17 @@
+apiVersion: v2
+name: pgp-crypto-gateway
+description: PGP Crypto Gateway for ISO8583 Financial Messages
+type: application
+version: 0.0.1
+appVersion: "0.0.1"
+keywords:
+  - pgp
+  - encryption
+  - iso8583
+  - financial-messages
+  - crypto-gateway
+maintainers:
+  - name: DatDevOps
+    email: dev@datdevops.com
+sources:
+  - https://github.com/tiendat1751998/pgp

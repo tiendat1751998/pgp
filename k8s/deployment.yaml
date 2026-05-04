@@ -1,0 +1,220 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pgp-crypto
+  labels:
+    name: pgp-crypto
+    environment: production
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pgp-secrets
+  namespace: pgp-crypto
+type: Opaque
+stringData:
+  # Generate with: openssl rand -base64 32
+  JWT_SECRET_KEY: ""
+  DB_PASSWORD: ""
+  REDIS_PASSWORD: ""
+  KEYSTORE_PASSWORD: ""
+  APP_MASTER_KEY: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgp-config
+  namespace: pgp-crypto
+data:
+  APP_ENV: "production"
+  SERVER_SSL_ENABLED: "false"
+  AUTH_DEV_MODE: "false"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgp-crypto-gateway
+  namespace: pgp-crypto
+  labels:
+    app: pgp-crypto-gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pgp-crypto-gateway
+  template:
+    metadata:
+      labels:
+        app: pgp-crypto-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: pgp-gateway
+        image: pgp-crypto-gateway:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "production"
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pgp-secrets
+              key: JWT_SECRET_KEY
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pgp-secrets
+              key: DB_PASSWORD
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pgp-secrets
+              key: REDIS_PASSWORD
+        - name: KEYSTORE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pgp-secrets
+              key: KEYSTORE_PASSWORD
+        envFrom:
+        - configMapRef:
+            name: pgp-config
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /tmp/cache
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgp-crypto-gateway
+  namespace: pgp-crypto
+spec:
+  selector:
+    app: pgp-crypto-gateway
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgp-crypto-gateway-nodeport
+  namespace: pgp-crypto
+spec:
+  selector:
+    app: pgp-crypto-gateway
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080
+    protocol: TCP
+    name: http
+  type: NodePort
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pgp-crypto-network-policy
+  namespace: pgp-crypto
+spec:
+  podSelector:
+    matchLabels:
+      app: pgp-crypto-gateway
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+  - from:
+    - podSelector:
+        matchLabels:
+          app: pgp-crypto-gateway
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to:
+    - podSelector:
+        matchLabels:
+          app: mariadb
+    ports:
+    - protocol: TCP
+      port: 3306
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: TCP
+      port: 53
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53

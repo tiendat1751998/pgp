@@ -1,0 +1,56 @@
+# ============================================================
+# CILIUM HELM VALUES (Production Configuration)
+# ============================================================
+
+# Required for eBPF
+k8sServiceHost: "kubernetes.default.svc"
+k8sServicePort: "443"
+
+# Enable Ingress Controller
+ingressController:
+  enabled: true
+  defaultSecretNamespace: "pgp-crypto"
+  loadBalancingMode: "dsr"  # Direct Server Return - better performance
+
+# eBPF Performance Tuning
+bpf:
+  hostRouting: true
+  masquerade: true
+  mode: "eni"  # For AWS, use "native" for on-prem
+
+# Kubernetes integration
+k8s:
+  requireIPv6: false
+  apiServer:
+    port: "443"
+    host: "kubernetes.default.svc"
+
+# Hubble Observability (optional but recommended)
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+
+# Security
+security:
+  enabloleIPv4: true
+  enableIPv6: false
+
+# Resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Operator
+operator:
+  replicas: 2
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi

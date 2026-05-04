@@ -1,0 +1,73 @@
+# Security Configuration
+security:
+  # Run as non-root user
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  
+  # Capabilities
+  capabilities:
+    drop:
+      - ALL
+  
+  # Seccomp
+  seccompProfile: RuntimeDefault
+  
+  # Read-only filesystem
+  readOnlyRootFilesystem: true
+
+# Resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+# Pod configuration
+pod:
+  replicas: 3
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: pgp-crypto-gateway
+          topologyKey: kubernetes.io/hostname
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8080
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8080
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  timeoutSeconds: 5
+
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 5
+  timeoutSeconds: 3
+
+# Environment
+env:
+  SPRING_PROFILES_ACTIVE: "production"
+  AUTH_DEV_MODE: "false"
+
+# Secrets (configure via external secret manager)
+secrets:
+  enabled: true
+  secretNames:
+    - pgp-secrets
