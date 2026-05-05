@@ -115,9 +115,11 @@ public class MTLSAuthenticationFilter extends OncePerRequestFilter {
             SenderContext.setAuthMethod(SenderContext.AuthMethod.TLS_CERTIFICATE);
             mtlsAuthSuccess.increment();
             log.info("[AUTH] mTLS authenticated | sender={} | path={}", senderId, request.getRequestURI());
+            log.trace("[AUTH] Context set: senderId={}", SenderContext.getSenderId());
 
             filterChain.doFilter(request, response);
         } finally {
+            log.trace("[AUTH] Clearing context for senderId={}", SenderContext.getSenderId());
             long duration = System.currentTimeMillis() - startTime;
             log.debug("[AUTH] duration={}ms | path={}", duration, request.getRequestURI());
             SenderContext.clear();

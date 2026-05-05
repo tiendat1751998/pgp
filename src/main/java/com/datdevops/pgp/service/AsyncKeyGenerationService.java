@@ -88,14 +88,14 @@ public class AsyncKeyGenerationService {
                 var ed25519KeyPair = keyPairGeneratorService.generateEd25519KeyPair();
                 var rsaKeyPair = rsaKeyPairGeneratorService.generateRSAKeyPair();
 
-                Map<String, String> keys = Map.of(
+                // Security: NEVER store raw private keys in AsyncJob result field.
+                // If needed, only store encrypted versions or public keys.
+                Map<String, String> publicKeys = Map.of(
                     "ed25519PublicKey", Base64.getEncoder().encodeToString(keyPairGeneratorService.getEd25519PublicKey(ed25519KeyPair).getEncoded()),
-                    "ed25519PrivateKey", Base64.getEncoder().encodeToString(keyPairGeneratorService.getEd25519PrivateKey(ed25519KeyPair).getEncoded()),
-                    "rsaPublicKey", rsaKeyPairGeneratorService.getBase64PublicKey(rsaKeyPair),
-                    "rsaPrivateKey", rsaKeyPairGeneratorService.getBase64PrivateKey(rsaKeyPair)
+                    "rsaPublicKey", rsaKeyPairGeneratorService.getBase64PublicKey(rsaKeyPair)
                 );
 
-                job.setResult(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(keys));
+                job.setResult(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(publicKeys));
             }
 
             long duration = System.currentTimeMillis() - startTime;

@@ -33,6 +33,9 @@ public class ReplayProtectionService {
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
     private static final int MAX_RECONNECT_ATTEMPTS = 5;
 
+    @Value("${app.replay-protection.strict-mode:false}")
+    private boolean strictMode;
+
     public ReplayProtectionService(RedisTemplate<String, Long> redisTemplate) {
         this.redisTemplate = redisTemplate;
         this.localCache = new ConcurrentHashMap<>();
@@ -81,7 +84,11 @@ public class ReplayProtectionService {
                         .setIfAbsent(key, System.currentTimeMillis(), Duration.ofSeconds(ttlSeconds));
                 return result != null && result;
             } catch (Exception e) {
-                log.error("Redis error, falling back to local: {}", e.getMessage());
+                log.error("[SECURITY_RISK] Redis error during nonce validation: {}", e.getMessage());
+                if (strictMode) {
+                    throw new SecurityException("Replay protection unavailable (Redis down) and strict mode is enabled.");
+                }
+                log.warn("[FALLBACK] Falling back to local cache. Nonce consistency NOT guaranteed across nodes!");
                 useRedis = false;
             }
         }

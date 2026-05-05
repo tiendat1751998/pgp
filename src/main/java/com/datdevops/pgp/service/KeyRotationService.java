@@ -22,15 +22,29 @@ public class KeyRotationService {
     private final KeyPairGeneratorService keyPairGeneratorService;
     private final RSAKeyPairGeneratorService rsaKeyPairGeneratorService;
     private final SecretEncryptionService secretEncryptionService;
+    private final KeyService keyService;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public KeyRotationService(KeyVersionRepository keyVersionRepository,
                             KeyPairGeneratorService keyPairGeneratorService,
                             RSAKeyPairGeneratorService rsaKeyPairGeneratorService,
-                            SecretEncryptionService secretEncryptionService) {
+                            SecretEncryptionService secretEncryptionService,
+                            KeyService keyService) {
         this.keyVersionRepository = keyVersionRepository;
         this.keyPairGeneratorService = keyPairGeneratorService;
         this.rsaKeyPairGeneratorService = rsaKeyPairGeneratorService;
         this.secretEncryptionService = secretEncryptionService;
+        this.keyService = keyService;
+    }
+
+    // Constructor for testing
+    @Deprecated
+    public KeyRotationService() {
+        this.keyVersionRepository = null;
+        this.keyPairGeneratorService = null;
+        this.rsaKeyPairGeneratorService = null;
+        this.secretEncryptionService = null;
+        this.keyService = null;
     }
 
     public String rotateRSAKey(String ownerId) {
@@ -53,32 +67,23 @@ public class KeyRotationService {
         if (keyPairGeneratorService == null || secretEncryptionService == null) {
             throw new IllegalStateException("Services not initialized for key generation");
         }
-        var ed25519KeyPair = keyPairGeneratorService.generateEd25519KeyPair();
-        byte[] publicKeyBytes = keyPairGeneratorService.getEd25519PublicKey(ed25519KeyPair).getEncoded();
-        byte[] privateKeyBytes = keyPairGeneratorService.getEd25519PrivateKey(ed25519KeyPair).getEncoded();
-        String publicKey = java.util.Base64.getEncoder().encodeToString(publicKeyBytes);
-        String privateKey = java.util.Base64.getEncoder().encodeToString(privateKeyBytes);
-        String encryptedPrivateKey;
         try {
-            encryptedPrivateKey = secretEncryptionService.encrypt(privateKey);
+            var ed25519KeyPair = keyPairGeneratorService.generateEd25519KeyPair();
+            byte[] publicKeyBytes = keyPairGeneratorService.getEd25519PublicKey(ed25519KeyPair).getEncoded();
+            byte[] privateKeyBytes = keyPairGeneratorService.getEd25519PrivateKey(ed25519KeyPair).getEncoded();
+            String publicKey = java.util.Base64.getEncoder().encodeToString(publicKeyBytes);
+            String privateKey = java.util.Base64.getEncoder().encodeToString(privateKeyBytes);
+            String encryptedPrivateKey = secretEncryptionService.encrypt(privateKey);
+            KeyVersion saved = rotateKey(ownerId, "ED25519", publicKey, encryptedPrivateKey);
+            return ownerId + "-ED25519-" + saved.getVersion();
         } catch (Exception e) {
-            throw new RuntimeException("Failed to encrypt private key", e);
+            throw new RuntimeException("Failed to rotate Ed25519 key", e);
         }
-        KeyVersion saved = rotateKey(ownerId, "ED25519", publicKey, encryptedPrivateKey);
-        return ownerId + "-ED25519-" + saved.getVersion();
     }
 
     public long getActiveKeyCount() {
         if (keyVersionRepository == null) return 0;
         return keyVersionRepository.countActiveKeys();
-    }
-
-    @Deprecated
-    public KeyRotationService() {
-        this.keyVersionRepository = null;
-        this.keyPairGeneratorService = null;
-        this.rsaKeyPairGeneratorService = null;
-        this.secretEncryptionService = null;
     }
 
     public Optional<KeyVersion> getActiveKey(String ownerId, String keyType) {
@@ -114,6 +119,11 @@ public class KeyRotationService {
 
         KeyVersion saved = keyVersionRepository.save(newKey);
         log.info("[KEY_ROTATION] owner={} type={} newVersion={}", ownerId, keyType, nextVersion);
+
+        // Immediate Cache Invalidation
+        if (keyService != null) {
+            keyService.clearCache(ownerId);
+        }
 
         return saved;
     }

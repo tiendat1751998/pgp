@@ -2,6 +2,7 @@ package com.datdevops.pgp.service;
 
 import com.datdevops.pgp.entity.Partner;
 import com.datdevops.pgp.mapper.EntityMapper;
+import com.datdevops.pgp.repository.KeyVersionRepository;
 import com.datdevops.pgp.security.SenderContext;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -26,6 +27,8 @@ public class KeyService {
     private final PartnerService partnerService;
     private final KeyStorageService keyStorageService;
     private final EntityMapper entityMapper;
+    private final KeyVersionRepository keyVersionRepository;
+    private final SecretEncryptionService secretEncryptionService;
 
     private final Cache<String, RSAKeyParameters> rsaKeyCache;
     private final Cache<String, Ed25519PrivateKeyParameters> edPrivateKeyCache;
@@ -33,10 +36,14 @@ public class KeyService {
 
     public KeyService(PartnerService partnerService, 
                       KeyStorageService keyStorageService, 
-                      EntityMapper entityMapper) {
+                      EntityMapper entityMapper,
+                      KeyVersionRepository keyVersionRepository,
+                      SecretEncryptionService secretEncryptionService) {
         this.partnerService = partnerService;
         this.keyStorageService = keyStorageService;
         this.entityMapper = entityMapper;
+        this.keyVersionRepository = keyVersionRepository;
+        this.secretEncryptionService = secretEncryptionService;
 
         this.rsaKeyCache = Caffeine.newBuilder()
                 .maximumSize(1000)
@@ -61,6 +68,16 @@ public class KeyService {
         
         return edPrivateKeyCache.get(senderId, id -> {
             try {
+                // Priority 1: Check Database for rotated keys
+                var rotatedKey = keyVersionRepository.findActiveKey(id, "ED25519");
+                if (rotatedKey.isPresent()) {
+                    String encryptedPriv = rotatedKey.get().getPrivateKeyEncrypted();
+                    String decryptedPriv = secretEncryptionService.decrypt(encryptedPriv);
+                    byte[] keyBytes = java.util.Base64.getDecoder().decode(decryptedPriv);
+                    return new Ed25519PrivateKeyParameters(keyBytes, 0);
+                }
+
+                // Priority 2: Fallback to Legacy Filesystem
                 byte[] keyBytes = keyStorageService.loadPartnerKey(id, id + "-signature.key");
                 return new Ed25519PrivateKeyParameters(keyBytes, 0);
             } catch (Exception e) {
@@ -77,12 +94,20 @@ public class KeyService {
         return rsaKeyCache.get(recipientId + "-PUB", id -> {
             try {
                 String actualId = id.substring(0, id.length() - 4);
+
+                // Priority 1: Check Database for rotated keys
+                var rotatedKey = keyVersionRepository.findActiveKey(actualId, "RSA");
+                if (rotatedKey.isPresent()) {
+                    return entityMapper.toRSAPublicKey(rotatedKey.get().getPublicKey());
+                }
+
+                // Priority 2: Fallback to Partner Entity
                 Partner partner = partnerService.getPartner(actualId)
                         .orElseThrow(() -> new IllegalArgumentException("Recipient not found: " + actualId));
                 return entityMapper.toRSAPublicKey(partner.getCustomerRsaPublicKey());
             } catch (Exception e) {
                 log.error("Failed to load public key for recipient: {}", id, e);
-                throw new RuntimeException("Could not load recipient public key");
+                throw new RuntimeException("Could not load recipient public key: " + e.getMessage(), e);
             }
         });
     }
@@ -97,6 +122,16 @@ public class KeyService {
         return rsaKeyCache.get(partnerId + "-PRIV", id -> {
             try {
                 String actualId = id.substring(0, id.length() - 5);
+
+                // Priority 1: Check Database for rotated keys
+                var rotatedKey = keyVersionRepository.findActiveKey(actualId, "RSA");
+                if (rotatedKey.isPresent()) {
+                    String encryptedPriv = rotatedKey.get().getPrivateKeyEncrypted();
+                    String decryptedPriv = secretEncryptionService.decrypt(encryptedPriv);
+                    return entityMapper.toRSAPrivateKey(decryptedPriv);
+                }
+
+                // Priority 2: Fallback to Keystore
                 String rawPassword = partnerService.getInternalKeystorePassword(actualId);
                 PrivateKey privateKey = keyStorageService.getPrivateKeyFromStore(
                         actualId, actualId + "-keystore.p12", "system-key", rawPassword);
@@ -114,6 +149,14 @@ public class KeyService {
     public Ed25519PublicKeyParameters getSenderVerificationKey(String senderId) {
         return edPublicKeyCache.get(senderId, id -> {
             try {
+                // Priority 1: Check Database for rotated keys
+                var rotatedKey = keyVersionRepository.findActiveKey(id, "ED25519");
+                if (rotatedKey.isPresent()) {
+                    byte[] keyBytes = java.util.Base64.getDecoder().decode(rotatedKey.get().getPublicKey());
+                    return new Ed25519PublicKeyParameters(keyBytes, 0);
+                }
+
+                // Priority 2: Fallback to Partner Entity
                 Partner partner = partnerService.getPartner(id)
                         .orElseThrow(() -> new IllegalArgumentException("Sender not found: " + id));
                 byte[] keyBytes = entityMapper.fromBase64(partner.getCustomerEd25519PublicKey());

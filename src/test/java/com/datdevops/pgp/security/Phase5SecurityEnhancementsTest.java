@@ -93,17 +93,13 @@ public class Phase5SecurityEnhancementsTest {
         AuditService auditService = new AuditService();
         
         String correlationId = "corr-" + System.currentTimeMillis();
-        String encryptAudit = auditService.logEncrypt(correlationId, "BANK_A", "BANK_B", "RAW", true);
-        assertNotNull(encryptAudit);
+        auditService.logEncrypt(correlationId, "BANK_A", "BANK_B", "RAW", true);
         
-        String decryptAudit = auditService.logDecrypt(correlationId, "BANK_B", "BANK_A", "JSON", true);
-        assertNotNull(decryptAudit);
+        auditService.logDecrypt(correlationId, "BANK_B", "BANK_A", "JSON", true);
         
-        String keyGenAudit = auditService.logKeyGeneration("BANK_A", "RSA");
-        assertNotNull(keyGenAudit);
+        auditService.logKeyGeneration("BANK_A", "RSA");
         
-        String keyRotAudit = auditService.logKeyRotation("BANK_A", "KEY_v1", "KEY_v2");
-        assertNotNull(keyRotAudit);
+        auditService.logKeyRotation("BANK_A", "KEY_v1", "KEY_v2");
         
         int logSize = auditService.getLogSize();
         assertEquals(4, logSize);
@@ -129,8 +125,7 @@ public class Phase5SecurityEnhancementsTest {
     public void testSecurityEventLogging() {
         AuditService auditService = new AuditService();
         
-        String eventAudit = auditService.logSecurityEvent("BANK_A", "FAILED_LOGIN", "Attempt 3 from IP 1.2.3.4");
-        assertNotNull(eventAudit);
+        auditService.logSecurityEvent("BANK_A", "FAILED_LOGIN", "Attempt 3 from IP 1.2.3.4");
         
         int logSize = auditService.getLogSize();
         assertEquals(1, logSize);

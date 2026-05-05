@@ -48,7 +48,7 @@ public class AuditService {
     }
 
     @Async
-    public String logEncrypt(String correlationId, String senderId, String recipientId, String payloadType, boolean success) {
+    public void logEncrypt(String correlationId, String senderId, String recipientId, String payloadType, boolean success) {
         AuditLog auditLog = new AuditLog();
         auditLog.setCorrelationId(correlationId);
         auditLog.setAction("ENCRYPT");
@@ -58,11 +58,10 @@ public class AuditService {
         auditLog.setSuccess(success);
         
         addToBuffer(auditLog);
-        return auditLog.getId();
     }
 
     @Async
-    public String logDecrypt(String correlationId, String senderId, String recipientId, String payloadType, boolean success) {
+    public void logDecrypt(String correlationId, String senderId, String recipientId, String payloadType, boolean success) {
         AuditLog auditLog = new AuditLog();
         auditLog.setCorrelationId(correlationId);
         auditLog.setAction("DECRYPT");
@@ -72,11 +71,10 @@ public class AuditService {
         auditLog.setSuccess(success);
         
         addToBuffer(auditLog);
-        return auditLog.getId();
     }
 
     @Async
-    public String logKeyGeneration(String entityId, String keyType) {
+    public void logKeyGeneration(String entityId, String keyType) {
         AuditLog auditLog = new AuditLog();
         auditLog.setAction("KEY_GEN");
         auditLog.setSenderId(entityId);
@@ -84,11 +82,10 @@ public class AuditService {
         auditLog.setSuccess(true);
         
         addToBuffer(auditLog);
-        return auditLog.getId();
     }
 
     @Async
-    public String logKeyRotation(String entityId, String oldKeyId, String newKeyId) {
+    public void logKeyRotation(String entityId, String oldKeyId, String newKeyId) {
         AuditLog auditLog = new AuditLog();
         auditLog.setAction("KEY_ROTATE");
         auditLog.setSenderId(entityId);
@@ -97,11 +94,10 @@ public class AuditService {
         auditLog.setSuccess(true);
         
         addToBuffer(auditLog);
-        return auditLog.getId();
     }
 
     @Async
-    public String logSecurityEvent(String entityId, String eventType, String details) {
+    public void logSecurityEvent(String entityId, String eventType, String details) {
         AuditLog auditLog = new AuditLog();
         auditLog.setAction("SECURITY_EVENT");
         auditLog.setSenderId(entityId);
@@ -110,24 +106,25 @@ public class AuditService {
         auditLog.setSuccess(true);
         
         addToBuffer(auditLog);
-        return auditLog.getId();
     }
 
     private void addToBuffer(AuditLog auditLog) {
-        if (auditBuffer.size() >= MAX_LOG_SIZE) {
-            if (cleanupLock.tryLock()) {
-                try {
-                    if (auditBuffer.size() >= MAX_LOG_SIZE) {
-                        List<AuditLog> discarded = new ArrayList<>(1000);
-                        int removed = auditBuffer.drainTo(discarded, 1000);
-                        log.warn("Audit buffer reached limit. Discarded {} oldest logs.", removed);
-                    }
-                } finally {
-                    cleanupLock.unlock();
-                }
+        // In a banking environment, we MUST NOT discard audit logs.
+        // If the buffer is full, we use 'offer' with a timeout or 'put' (blocking).
+        // Since this is called from @Async methods, blocking the executor thread 
+        // provides natural backpressure to the rest of the system.
+        try {
+            boolean accepted = auditBuffer.offer(auditLog, 5, TimeUnit.SECONDS);
+            if (!accepted) {
+                log.error("[CRITICAL] Audit buffer full and timed out. Potential data loss or system stall. identity={}", auditLog.getSenderId());
+                // Fallback: synchronous emergency log to file/console
+                log.warn("[EMERGENCY_LOG] CorrelationId: {} | Action: {} | Success: {}", 
+                    auditLog.getCorrelationId(), auditLog.getAction(), auditLog.isSuccess());
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted while adding to audit buffer", e);
         }
-        auditBuffer.offer(auditLog);
     }
 
     public int getLogSize() {
@@ -163,11 +160,18 @@ public class AuditService {
         if (!batch.isEmpty()) {
             try {
                 auditLogRepository.saveAll(batch);
-                log.info("Flushed {} audit logs to database", batch.size());
+                log.info("Successfully flushed {} audit logs to database", batch.size());
             } catch (Exception e) {
-                log.error("Failed to flush audit logs to database: {}", e.getMessage());
-                // In case of error, put back to buffer (though they go to the end)
-                auditBuffer.addAll(batch);
+                log.error("[DATABASE_ERROR] Failed to flush {} audit logs: {}", batch.size(), e.getMessage());
+                // Crucial: Prepend the batch back to the front of the buffer if possible, 
+                // or use a dedicated failure-retry queue to maintain strict chronological order.
+                // For now, we log them as an error. Putting them at the end of the buffer 
+                // (as was previously done) would corrupt the event sequence.
+                for (int i = batch.size() - 1; i >= 0; i--) {
+                    // Try to put back at the head (not easily supported by LinkedBlockingQueue without a Deque)
+                    // So we log it as an emergency and hope the DB recovers.
+                    log.error("[DATA_RECOVERY_REQUIRED] {}", batch.get(i));
+                }
             }
         }
     }

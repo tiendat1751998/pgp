@@ -11,6 +11,9 @@ import org.bouncycastle.crypto.params.RSAKeyParameters;
 import org.springframework.stereotype.Component;
 
 import java.security.PublicKey;
+import java.security.KeyFactory;
+import java.security.spec.RSAPublicKeySpec;
+import java.security.spec.RSAPrivateKeySpec;
 import java.security.PrivateKey;
 import java.util.Base64;
 import java.util.Map;
@@ -58,13 +61,13 @@ public class EntityMapper {
 
     public PublicKey toJavaPublicKey(RSAKeyParameters bcKey) throws Exception {
         java.security.KeyFactory factory = java.security.KeyFactory.getInstance("RSA");
-        java.security.spec.RSAPublicKeySpec spec = new java.security.spec.RSAPublicKeySpec(bcKey.getModulus(), bcKey.getExponent());
+        RSAPublicKeySpec spec = new RSAPublicKeySpec(bcKey.getModulus(), bcKey.getExponent());
         return factory.generatePublic(spec);
     }
 
     public PrivateKey toJavaPrivateKey(RSAKeyParameters bcKey) throws Exception {
-        java.security.KeyFactory factory = java.security.KeyFactory.getInstance("RSA");
-        java.security.spec.RSAPrivateKeySpec spec = new java.security.spec.RSAPrivateKeySpec(bcKey.getModulus(), bcKey.getExponent());
+        KeyFactory factory = KeyFactory.getInstance("RSA");
+        RSAPrivateKeySpec spec = new RSAPrivateKeySpec(bcKey.getModulus(), bcKey.getExponent());
         return factory.generatePrivate(spec);
     }
 
@@ -91,17 +94,17 @@ public class EntityMapper {
     }
 
     public PartnerDto toPartnerDto(Partner partner) {
-        if (partner == null) return null;
+        if (partner == null)
+            return null;
         return new PartnerDto(
-            partner.getId(),
-            partner.getName(),
-            partner.getCustomerEd25519PublicKey(),
-            partner.getCustomerRsaPublicKey(),
-            partner.getKeyFingerprint(),
-            null, // internalKeystorePassword - never expose
-            partner.getKeystorePassword() != null, // active if has keystore password
-            partner.getCreatedAt() != null ? partner.getCreatedAt().toEpochMilli() : null,
-            partner.getUpdatedAt() != null ? partner.getUpdatedAt().toEpochMilli() : null
-        );
+                partner.getId(),
+                partner.getName(),
+                partner.getCustomerEd25519PublicKey(),
+                partner.getCustomerRsaPublicKey(),
+                partner.getKeyFingerprint(),
+                null, // internalKeystorePassword - never expose
+                partner.getKeystorePassword() != null, // active if has keystore password
+                partner.getCreatedAt() != null ? partner.getCreatedAt().toEpochMilli() : null,
+                partner.getUpdatedAt() != null ? partner.getUpdatedAt().toEpochMilli() : null);
     }
 }
