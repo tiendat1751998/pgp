@@ -1,0 +1,22 @@
+{
+  "defaultProvider": "openrouter",
+  "agents": {
+    "planner": {
+      "model": "gpt-oss-120b",
+      "temperature": 0.2
+    },
+    "coder": {
+      "model": "hermes-3-405b-instruct",
+      "temperature": 0.15
+    },
+    "reviewer": {
+      "model": "gpt-oss-120b",
+      "temperature": 0.05
+    },
+    "tester": {
+      "model": "gpt-oss-120b",
+      "temperature": 0.1
+    }
+  },
+  "defaultWorkflow": "super-loop"
+}

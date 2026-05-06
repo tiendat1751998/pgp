@@ -2,17 +2,28 @@ package com.datdevops.pgp.util;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import javax.crypto.spec.PBEKeySpec;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.security.spec.KeySpec;
 import java.util.Base64;
 
+/**
+ * Utility for encrypting and decrypting database columns at the application level.
+ * Hardened with PBKDF2 for key derivation to prevent brute-force attacks.
+ */
 public class DatabaseColumnEncryptor {
 
     private static final String ALGORITHM = "AES/GCM/NoPadding";
     private static final int GCM_IV_LENGTH = 12;
     private static final int GCM_TAG_LENGTH = 128;
+    private static final int PBKDF2_ITERATIONS = 65536;
+    private static final int KEY_LENGTH = 256;
+    private static final byte[] SALT = "PGP_GATEWAY_SALT_2024".getBytes(StandardCharsets.UTF_8);
 
     private final SecretKey secretKey;
 
@@ -23,10 +34,12 @@ public class DatabaseColumnEncryptor {
 
     private byte[] deriveKey(String masterKey) {
         try {
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            return digest.digest(masterKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            // Using PBKDF2 with a high iteration count to thwart brute-force attacks.
+            KeySpec spec = new PBEKeySpec(masterKey.toCharArray(), SALT, PBKDF2_ITERATIONS, KEY_LENGTH);
+            SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            return factory.generateSecret(spec).getEncoded();
         } catch (Exception e) {
-            throw new RuntimeException("Failed to derive encryption key", e);
+            throw new RuntimeException("Failed to derive encryption key using PBKDF2", e);
         }
     }
 
@@ -42,7 +55,7 @@ public class DatabaseColumnEncryptor {
             GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
             cipher.init(Cipher.ENCRYPT_MODE, secretKey, parameterSpec);
 
-            byte[] ciphertext = cipher.doFinal(plaintext.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
 
             ByteBuffer byteBuffer = ByteBuffer.allocate(iv.length + ciphertext.length);
             byteBuffer.put(iv);
@@ -72,7 +85,7 @@ public class DatabaseColumnEncryptor {
             GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
             cipher.init(Cipher.DECRYPT_MODE, secretKey, parameterSpec);
 
-            return new String(cipher.doFinal(ciphertext), java.nio.charset.StandardCharsets.UTF_8);
+            return new String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8);
         } catch (Exception e) {
             throw new RuntimeException("Decryption failed", e);
         }

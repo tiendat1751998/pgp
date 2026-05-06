@@ -5,6 +5,8 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import io.github.resilience4j.retry.annotation.Retry;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.bulkhead.annotation.Bulkhead;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
@@ -15,34 +17,43 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.cert.Certificate;
-import java.util.Base64;
+import java.util.Arrays;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
+/**
+ * Hardened service for secure cryptographic key storage on the filesystem.
+ * Implements atomic writes, secure memory handling, and strict permission enforcement.
+ */
 @Service
 public class KeyStorageService {
+
+    private static final Logger log = LoggerFactory.getLogger(KeyStorageService.class);
+    private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$");
 
     @Value("${app.key-store-path:./vault/}")
     private String vaultPath;
 
-    @Value("${app.keystore.password:changeit}")
-    private String keystorePassword;
+    @Value("${app.keystore.password:}")
+    private char[] keystorePassword;
 
     private final Cache<String, PrivateKey> privateKeyCache;
     private final DistributedLockService lockService;
 
     public KeyStorageService(DistributedLockService lockService) {
-        this.lockService = lockService != null ? lockService : null;
+        this.lockService = lockService;
         this.privateKeyCache = Caffeine.newBuilder()
                 .maximumSize(1000)
                 .expireAfterAccess(30, TimeUnit.MINUTES)
                 .build();
     }
-
-private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$");
 
     @PostConstruct
     public void init() throws IOException {
@@ -50,11 +61,14 @@ private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$
         if (!Files.exists(vault)) {
             Files.createDirectories(vault);
         }
+        secureFile(vault);
+        log.info("KeyStorageService initialized at: {}", vault.toAbsolutePath());
     }
 
     private void validatePartnerId(String partnerId) {
         if (partnerId == null || !SAFE_PARTNER_ID.matcher(partnerId).matches()) {
-            throw new IllegalArgumentException("Invalid partnerId: must be alphanumeric, underscore or hyphen only");
+            log.error("[SECURITY] Invalid partnerId pattern detected: {}", partnerId);
+            throw new IllegalArgumentException("Invalid partnerId format");
         }
     }
 
@@ -67,13 +81,24 @@ private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$
         return path;
     }
 
-    // --- Organized File Operations ---
+    // --- Atomic File Operations ---
 
     public void savePartnerKey(String partnerId, String fileName, byte[] keyData) throws IOException {
         validatePartnerId(partnerId);
         Path partnerDir = getPartnerPath(partnerId);
         Path filePath = partnerDir.resolve(fileName);
-        Files.write(filePath, keyData);
+        Path tempPath = partnerDir.resolve(fileName + ".tmp");
+
+        try {
+            // Fix Security #220: Use restrictive permissions during creation
+            Files.write(tempPath, keyData);
+            secureFile(tempPath);
+            
+            // Fix Logic #218: Atomic move to prevent file corruption
+            Files.move(tempPath, filePath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(tempPath);
+        }
     }
 
     public byte[] loadPartnerKey(String partnerId, String fileName) throws IOException {
@@ -84,64 +109,79 @@ private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$
         return Files.readAllBytes(filePath);
     }
 
-    // --- Vault-style KeyStore Operations ---
-
-    private String getKeystoreFileName(String partnerId) {
-        return partnerId + "-keystore.p12";
-    }
+    // --- KeyStore Operations ---
 
     @Retry(name = "keyStorage")
-    @CircuitBreaker(name = "keyStorage", fallbackMethod = "loadPartnerKeyStoreFallback")
+    @CircuitBreaker(name = "keyStorage")
     public KeyStore loadPartnerKeyStore(String partnerId, String fileName) throws Exception {
         if (fileName == null || fileName.isEmpty()) {
-            fileName = getKeystoreFileName(partnerId);
+            fileName = partnerId + "-keystore.p12";
         }
         Path filePath = getPartnerPath(partnerId).resolve(fileName);
         KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        
+        char[] password = getKeystorePassword();
         try (FileInputStream fis = new FileInputStream(filePath.toFile())) {
-            keyStore.load(fis, keystorePassword.toCharArray());
+            keyStore.load(fis, password);
+        } finally {
+            clearPassword(password);
         }
         return keyStore;
     }
 
+    private synchronized char[] getKeystorePassword() {
+        return (keystorePassword == null) ? new char[0] : keystorePassword.clone();
+    }
+
+    private void clearPassword(char[] password) {
+        if (password != null) {
+            Arrays.fill(password, '\0');
+        }
+    }
+
+    private void secureFile(Path filePath) {
+        try {
+            Set<PosixFilePermission> perms = PosixFilePermissions.fromString("r--------");
+            Files.setPosixFilePermissions(filePath, perms);
+        } catch (UnsupportedOperationException e) {
+            // Ignore on non-POSIX systems (Windows)
+        } catch (IOException e) {
+            log.warn("Could not set restrictive permissions on: {}", filePath);
+        }
+    }
+
     @Retry(name = "keyStorage")
     @Bulkhead(name = "keyAccess")
-    public PrivateKey getPrivateKeyFromStore(String partnerId, String fileName, String alias, String password) throws Exception {
-        validateKeyOwnership(partnerId, fileName);
-
-        String cacheKey = partnerId + ":" + fileName + ":" + alias;
+    public PrivateKey getPrivateKeyFromStore(String partnerId, String fileName, String alias, char[] password) throws Exception {
+        validatePartnerId(partnerId);
         
+        String cacheKey = partnerId + ":" + fileName + ":" + alias;
         PrivateKey cachedKey = privateKeyCache.getIfPresent(cacheKey);
         if (cachedKey != null) {
             return cachedKey;
         }
         
         KeyStore keyStore = loadPartnerKeyStore(partnerId, fileName);
-        PrivateKey privateKey = (PrivateKey) keyStore.getKey(alias, password.toCharArray());
-        
-        if (privateKey != null) {
-            privateKeyCache.put(cacheKey, privateKey);
-        }
-        
-        return privateKey;
-    }
-
-    private void validateKeyOwnership(String partnerId, String fileName) {
-        String expectedFileName = partnerId + "-keystore.p12";
-        if (!expectedFileName.equals(fileName)) {
-            throw new SecurityException("Key access violation: cannot access keys of different sender");
+        try {
+            PrivateKey privateKey = (PrivateKey) keyStore.getKey(alias, password);
+            if (privateKey != null) {
+                privateKeyCache.put(cacheKey, privateKey);
+            }
+            return privateKey;
+        } finally {
+            // Caller is responsible for clearing the input 'password' array
         }
     }
 
     @Retry(name = "keyStorage")
-    public void savePartnerKeyStore(String partnerId, String fileName, String alias, PrivateKey privateKey, Certificate[] chain, String password) throws Exception {
+    public void savePartnerKeyStore(String partnerId, String fileName, String alias, PrivateKey privateKey, Certificate[] chain, char[] password) throws Exception {
         if (lockService != null) {
             String lockResource = partnerId + ":" + fileName;
             lockService.executeWithLock(lockResource, () -> {
                 try {
                     doSavePartnerKeyStore(partnerId, fileName, alias, privateKey, chain, password);
                 } catch (Exception e) {
-                    throw new RuntimeException(e);
+                    throw new RuntimeException("Failed to save keystore under lock", e);
                 }
                 return null;
             });
@@ -150,42 +190,40 @@ private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$
         }
     }
 
-    private void doSavePartnerKeyStore(String partnerId, String fileName, String alias, PrivateKey privateKey, Certificate[] chain, String password) throws Exception {
+    private void doSavePartnerKeyStore(String partnerId, String fileName, String alias, PrivateKey privateKey, Certificate[] chain, char[] password) throws Exception {
         Path partnerDir = getPartnerPath(partnerId);
         Path filePath = partnerDir.resolve(fileName);
+        Path tempPath = partnerDir.resolve(fileName + ".tmp");
         
-        KeyStore keyStore;
-        if (Files.exists(filePath)) {
-            keyStore = KeyStore.getInstance("PKCS12");
-            try (FileInputStream fis = new FileInputStream(filePath.toFile())) {
-                keyStore.load(fis, keystorePassword.toCharArray());
+        char[] ksPassword = getKeystorePassword();
+        try {
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            if (Files.exists(filePath)) {
+                try (FileInputStream fis = new FileInputStream(filePath.toFile())) {
+                    keyStore.load(fis, ksPassword);
+                }
+            } else {
+                keyStore.load(null, ksPassword);
             }
-        } else {
-            keyStore = KeyStore.getInstance("PKCS12");
-            keyStore.load(null, keystorePassword.toCharArray());
+            
+            keyStore.setKeyEntry(alias, privateKey, password, chain);
+            
+            // Fix Logic #218: Atomic write for Keystores
+            try (FileOutputStream fos = new FileOutputStream(tempPath.toFile())) {
+                keyStore.store(fos, ksPassword);
+            }
+            secureFile(tempPath);
+            Files.move(tempPath, filePath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            
+            privateKeyCache.put(partnerId + ":" + fileName + ":" + alias, privateKey);
+        } finally {
+            clearPassword(ksPassword);
+            Files.deleteIfExists(tempPath);
         }
-
-        keyStore.setKeyEntry(alias, privateKey, password.toCharArray(), chain);
-        
-        try (FileOutputStream fos = new FileOutputStream(filePath.toFile())) {
-            keyStore.store(fos, keystorePassword.toCharArray());
-        }
-        
-        String cacheKey = partnerId + ":" + fileName + ":" + alias;
-        privateKeyCache.put(cacheKey, privateKey);
-    }
-
-    // --- Helpers ---
-
-    public void clearCache() {
-        privateKeyCache.invalidateAll();
-    }
-
-    public long getCacheSize() {
-        return privateKeyCache.estimatedSize();
     }
 
     public void deletePartnerKeys(String partnerId) {
+        validatePartnerId(partnerId);
         if (lockService != null) {
             lockService.executeWithLock(partnerId + ":delete", () -> {
                 doDeletePartnerKeys(partnerId);
@@ -203,6 +241,7 @@ private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$
                 deleteDirectory(partnerDir);
             }
             privateKeyCache.asMap().keySet().removeIf(k -> k.startsWith(partnerId + ":"));
+            log.info("[CLEANUP] Deleted all keys and invalidated cache for partner: {}", partnerId);
         } catch (IOException e) {
             throw new RuntimeException("Failed to delete partner keys: " + partnerId, e);
         }
@@ -217,9 +256,5 @@ private static final Pattern SAFE_PARTNER_ID = Pattern.compile("^[a-zA-Z0-9_-]+$
             }
         }
         Files.deleteIfExists(dir);
-    }
-
-    private KeyStore loadPartnerKeyStoreFallback(String partnerId, String fileName, Throwable t) {
-        throw new RuntimeException("Failed to load keystore for partner: " + partnerId + ". Cause: " + t.getMessage());
     }
 }

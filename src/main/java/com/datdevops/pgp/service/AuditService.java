@@ -11,119 +11,128 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
-import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicInteger;
+import jakarta.annotation.PreDestroy;
 
+/**
+ * Performant, asynchronous Audit Service with per-partner quota to prevent DB exhaustion.
+ */
 @Service
 public class AuditService {
 
     private static final Logger log = LoggerFactory.getLogger(AuditService.class);
-    private static final int MAX_LOG_SIZE = 10000;
-    private static final int BATCH_SIZE = 100;
-    private static final DateTimeFormatter FORMATTER = 
-        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").withZone(ZoneId.systemDefault());
+    private static final int MAX_LOG_SIZE = 20000;
+    private static final int BATCH_SIZE = 500;
+    private static final int MAX_AUDITS_PER_PARTNER = 10000;
+
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
+            .withZone(ZoneOffset.UTC);
 
     private final LinkedBlockingQueue<AuditLog> auditBuffer;
-    private final ReentrantLock cleanupLock = new ReentrantLock();
-    private final Cache<String, AuditLog> auditCache;
     private final AuditLogRepository auditLogRepository;
+    private final Cache<String, AtomicInteger> partnerAuditCount;
 
     public AuditService(AuditLogRepository auditLogRepository) {
         this.auditLogRepository = auditLogRepository;
-        this.auditBuffer = new LinkedBlockingQueue<>(MAX_LOG_SIZE + 1000);
-        this.auditCache = Caffeine.newBuilder()
+        this.auditBuffer = new LinkedBlockingQueue<>(MAX_LOG_SIZE);
+        this.partnerAuditCount = Caffeine.newBuilder()
                 .maximumSize(1000)
-                .expireAfterWrite(1, TimeUnit.HOURS)
+                .expireAfterWrite(1, TimeUnit.MINUTES)
                 .build();
     }
 
+    @PreDestroy
+    public void onShutdown() {
+        log.info("[SHUTDOWN] Flushing {} remaining audit logs to database...", auditBuffer.size());
+        flushToDatabase();
+        log.info("[SHUTDOWN] Audit log flush complete.");
+    }
+
+    /** @deprecated For testing only */
+    @Deprecated
     public AuditService() {
         this(null);
     }
 
     @Async
-    public void logEncrypt(String correlationId, String senderId, String recipientId, String payloadType, boolean success) {
-        AuditLog auditLog = new AuditLog();
+    public void logEncrypt(String correlationId, String senderId, String recipientId, String payloadType,
+            boolean success) {
+        AuditLog auditLog = createBaseLog("ENCRYPT", senderId, success);
         auditLog.setCorrelationId(correlationId);
-        auditLog.setAction("ENCRYPT");
-        auditLog.setSenderId(senderId);
         auditLog.setRecipientId(recipientId);
         auditLog.setPayloadType(payloadType);
-        auditLog.setSuccess(success);
-        
         addToBuffer(auditLog);
     }
 
     @Async
-    public void logDecrypt(String correlationId, String senderId, String recipientId, String payloadType, boolean success) {
-        AuditLog auditLog = new AuditLog();
+    public void logDecrypt(String correlationId, String senderId, String recipientId, String payloadType,
+            boolean success) {
+        AuditLog auditLog = createBaseLog("DECRYPT", senderId, success);
         auditLog.setCorrelationId(correlationId);
-        auditLog.setAction("DECRYPT");
-        auditLog.setSenderId(senderId);
         auditLog.setRecipientId(recipientId);
         auditLog.setPayloadType(payloadType);
-        auditLog.setSuccess(success);
-        
         addToBuffer(auditLog);
     }
 
     @Async
     public void logKeyGeneration(String entityId, String keyType) {
-        AuditLog auditLog = new AuditLog();
-        auditLog.setAction("KEY_GEN");
-        auditLog.setSenderId(entityId);
+        AuditLog auditLog = createBaseLog("KEY_GEN", entityId, true);
         auditLog.setPayloadType(keyType);
-        auditLog.setSuccess(true);
-        
         addToBuffer(auditLog);
     }
 
     @Async
     public void logKeyRotation(String entityId, String oldKeyId, String newKeyId) {
-        AuditLog auditLog = new AuditLog();
-        auditLog.setAction("KEY_ROTATE");
-        auditLog.setSenderId(entityId);
-        auditLog.setPayloadType("RSA");
+        AuditLog auditLog = createBaseLog("KEY_ROTATE", entityId, true);
+        auditLog.setPayloadType("RSA/ED25519");
         auditLog.setDetails(oldKeyId + " -> " + newKeyId);
-        auditLog.setSuccess(true);
-        
         addToBuffer(auditLog);
     }
 
     @Async
     public void logSecurityEvent(String entityId, String eventType, String details) {
-        AuditLog auditLog = new AuditLog();
-        auditLog.setAction("SECURITY_EVENT");
-        auditLog.setSenderId(entityId);
+        AuditLog auditLog = createBaseLog("SECURITY_EVENT", entityId, true);
         auditLog.setPayloadType(eventType);
         auditLog.setDetails(details);
-        auditLog.setSuccess(true);
-        
         addToBuffer(auditLog);
     }
 
+    private AuditLog createBaseLog(String action, String senderId, boolean success) {
+        AuditLog auditLog = new AuditLog();
+        auditLog.setAction(action);
+        auditLog.setSenderId(senderId);
+        auditLog.setSuccess(success);
+        auditLog.setTimestamp(Instant.now()); // CRITICAL: Fix for NPE in cleanup
+        return auditLog;
+    }
+
     private void addToBuffer(AuditLog auditLog) {
-        // In a banking environment, we MUST NOT discard audit logs.
-        // If the buffer is full, we use 'offer' with a timeout or 'put' (blocking).
-        // Since this is called from @Async methods, blocking the executor thread 
-        // provides natural backpressure to the rest of the system.
         try {
-            boolean accepted = auditBuffer.offer(auditLog, 5, TimeUnit.SECONDS);
+            String senderId = sanitize(auditLog.getSenderId());
+            AtomicInteger count = partnerAuditCount.get(senderId, k -> new AtomicInteger(0));
+
+            if (count.get() >= MAX_AUDITS_PER_PARTNER) {
+                log.warn("[AUDIT_QUOTA_EXCEEDED] Partner {} exceeded quota, dropping audit", senderId);
+                return;
+            }
+
+            boolean accepted = auditBuffer.offer(auditLog, 2, TimeUnit.SECONDS);
             if (!accepted) {
-                log.error("[CRITICAL] Audit buffer full and timed out. Potential data loss or system stall. identity={}", auditLog.getSenderId());
-                // Fallback: synchronous emergency log to file/console
-                log.warn("[EMERGENCY_LOG] CorrelationId: {} | Action: {} | Success: {}", 
-                    auditLog.getCorrelationId(), auditLog.getAction(), auditLog.isSuccess());
+                log.error("[CRITICAL] Audit buffer overflow! Data loss for action={} by={}",
+                        sanitize(auditLog.getAction()), senderId);
+            } else {
+                count.incrementAndGet();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("Interrupted while adding to audit buffer", e);
+            log.error("Audit log interrupted", e);
         }
     }
 
@@ -141,14 +150,7 @@ public class AuditService {
                 .toList());
     }
 
-    public void cleanupOldEntries(long cutoffMillis) {
-        long cutoff = System.currentTimeMillis() - cutoffMillis;
-        while (auditBuffer.peek() != null && auditBuffer.peek().getTimestamp().toEpochMilli() < cutoff) {
-            auditBuffer.poll();
-        }
-    }
-
-    @Scheduled(fixedRate = 5000)
+    @Scheduled(fixedRate = 2000) // Faster flush for high TPS
     public void flushToDatabase() {
         if (auditLogRepository == null || auditBuffer.isEmpty()) {
             return;
@@ -160,19 +162,30 @@ public class AuditService {
         if (!batch.isEmpty()) {
             try {
                 auditLogRepository.saveAll(batch);
-                log.info("Successfully flushed {} audit logs to database", batch.size());
             } catch (Exception e) {
-                log.error("[DATABASE_ERROR] Failed to flush {} audit logs: {}", batch.size(), e.getMessage());
-                // Crucial: Prepend the batch back to the front of the buffer if possible, 
-                // or use a dedicated failure-retry queue to maintain strict chronological order.
-                // For now, we log them as an error. Putting them at the end of the buffer 
-                // (as was previously done) would corrupt the event sequence.
-                for (int i = batch.size() - 1; i >= 0; i--) {
-                    // Try to put back at the head (not easily supported by LinkedBlockingQueue without a Deque)
-                    // So we log it as an emergency and hope the DB recovers.
-                    log.error("[DATA_RECOVERY_REQUIRED] {}", batch.get(i));
+                log.error("[AUDIT_FAILURE] DB persistence failed for {} logs. Attempting recovery.", batch.size(), e);
+                // Attempt to put logs back at the END of the buffer to retry later
+                // Note: This breaks strict chronological order in DB but prevents total data
+                // loss.
+                for (AuditLog logItem : batch) {
+                    if (!auditBuffer.offer(logItem)) {
+                        log.warn("[AUDIT_LOST] Buffer full during recovery. Log lost: {}", logItem);
+                    }
                 }
             }
         }
+    }
+
+    @Scheduled(cron = "0 0 * * * ?") // Hourly cleanup
+    public void cleanupOldBufferEntries() {
+        long cutoff = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(2);
+        auditBuffer.removeIf(logItem -> logItem.getTimestamp().toEpochMilli() < cutoff);
+        log.debug("[AUDIT_CLEANUP] Buffer cleanup completed");
+    }
+
+    private String sanitize(String value) {
+        if (value == null) return "null";
+        // CRITICAL: Prevent log forgery by removing newlines and control characters
+        return value.replaceAll("[\r\n]", "_").replaceAll("[^\\p{Print}]", "?");
     }
 }

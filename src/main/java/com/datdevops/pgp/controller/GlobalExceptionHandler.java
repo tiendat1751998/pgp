@@ -1,124 +1,59 @@
 package com.datdevops.pgp.controller;
 
-import com.datdevops.pgp.security.SenderContext;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
-import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.context.request.WebRequest;
 
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 
-@RestControllerAdvice
+/**
+ * Global Exception Handler to prevent information leakage.
+ * Ensures that stack traces and internal system details are never exposed to clients.
+ */
+@ControllerAdvice
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-    private final Counter error4xxCounter;
-    private final Counter error5xxCounter;
-
-    public GlobalExceptionHandler(MeterRegistry meterRegistry) {
-        this.error4xxCounter = Counter.builder("http.errors")
-                .tag("status", "4xx")
-                .register(meterRegistry);
-        this.error5xxCounter = Counter.builder("http.errors")
-                .tag("status", "5xx")
-                .register(meterRegistry);
-    }
-
-    @ExceptionHandler(ConstraintViolationException.class)
-    public ResponseEntity<Map<String, Object>> handleValidationException(ConstraintViolationException ex) {
-        String traceId = MDC.get("traceId");
-        if (traceId == null) traceId = UUID.randomUUID().toString();
-
-        error4xxCounter.increment();
-        log.warn("[VALIDATION_ERROR] traceId={} message={}", traceId, ex.getMessage());
-
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                "error", "Validation Error",
-                "message", ex.getMessage(),
-                "traceId", traceId
-        ));
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<Object> handleSecurityException(SecurityException ex, WebRequest request) {
+        log.error("[SECURITY_ERROR] Access denied: {}", ex.getMessage());
+        return buildResponse(HttpStatus.UNAUTHORIZED, "Security Violation", "Access denied or invalid credentials");
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, Object>> handleBadRequest(IllegalArgumentException ex) {
-        String traceId = MDC.get("traceId");
-        if (traceId == null) traceId = UUID.randomUUID().toString();
-
-        error4xxCounter.increment();
-        log.warn("[BAD_REQUEST] traceId={} message={}", traceId, ex.getMessage());
-
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                "error", "Bad Request",
-                "message", ex.getMessage(),
-                "traceId", traceId
-        ));
-    }
-
-    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    public ResponseEntity<Map<String, Object>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
-        String traceId = UUID.randomUUID().toString();
-        error4xxCounter.increment();
-        
-        log.warn("[TYPE_MISMATCH] traceId={} message={}", traceId, ex.getMessage());
-
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                "error", "Type Mismatch",
-                "message", "Invalid parameter type",
-                "traceId", traceId
-        ));
-    }
-
-    @ExceptionHandler(NoHandlerFoundException.class)
-    public ResponseEntity<Map<String, Object>> handleNotFound(NoHandlerFoundException ex) {
-        String traceId = UUID.randomUUID().toString();
-        error4xxCounter.increment();
-        
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
-                "error", "Not Found",
-                "message", "Endpoint not found",
-                "traceId", traceId
-        ));
-    }
-
-    @ExceptionHandler(SecurityException.class)
-    public ResponseEntity<Map<String, Object>> handleSecurityException(SecurityException ex) {
-        String traceId = MDC.get("traceId");
-        if (traceId == null) traceId = UUID.randomUUID().toString();
-        String senderId = SenderContext.getSenderId();
-
-        error4xxCounter.increment();
-        log.warn("[SECURITY] traceId={} sender={} message={}", traceId, senderId, ex.getMessage());
-
-        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
-                "error", "Security Error",
-                "message", "Access denied",
-                "traceId", traceId
-        ));
+    public ResponseEntity<Object> handleIllegalArgumentException(IllegalArgumentException ex, WebRequest request) {
+        log.warn("[VALIDATION_ERROR] Invalid input: {}", ex.getMessage());
+        return buildResponse(HttpStatus.BAD_REQUEST, "Invalid Request", ex.getMessage());
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<Map<String, Object>> handleGenericException(Exception ex) {
-        String traceId = MDC.get("traceId");
-        if (traceId == null) traceId = UUID.randomUUID().toString();
-        String senderId = SenderContext.getSenderId();
+    public ResponseEntity<Object> handleGeneralException(Exception ex, WebRequest request) {
+        // Log the full stack trace internally for debugging
+        log.error("[INTERNAL_ERROR] Unhandled exception occurred", ex);
+        
+        // Return a generic error message to the client
+        return buildResponse(
+            HttpStatus.INTERNAL_SERVER_ERROR, 
+            "Internal Server Error", 
+            "An unexpected error occurred. Please contact system administrator with Correlation ID."
+        );
+    }
 
-        error5xxCounter.increment();
-        log.error("[INTERNAL_ERROR] traceId={} sender={} message={}", traceId, senderId, ex.getMessage(), ex);
+    private ResponseEntity<Object> buildResponse(HttpStatus status, String error, String message) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("timestamp", Instant.now().toString());
+        body.put("status", status.value());
+        body.put("error", error);
+        body.put("message", message);
+        body.put("path", "PROTECTED"); // Mask the path to avoid reconnaissance
 
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
-                "error", "Internal Server Error",
-                "message", "An unexpected error occurred",
-                "traceId", traceId
-        ));
+        return new ResponseEntity<>(body, status);
     }
 }

@@ -6,7 +6,9 @@ import java.time.Instant;
 /**
  * Legacy entity — NOT USED in the M2M architecture.
  * Kept only for schema compatibility. This system uses mTLS certificates, not user accounts.
+ * @deprecated Not used in current architecture - use Partner entity for M2M authentication
  */
+@Deprecated
 @Entity
 @Table(name = "users")
 public class User {

@@ -58,11 +58,20 @@ public class KeyRotationController {
     }
 
     @GetMapping("/history")
-    public ResponseEntity<ApiResponse<Object>> getHistory(@RequestParam String type) {
+    public ResponseEntity<ApiResponse<Object>> getHistory(
+            @RequestParam(defaultValue = "RSA") String type) {
         String partnerId = SenderContext.getSenderId();
         if (partnerId == null) return ResponseEntity.status(403).build();
 
+        if (!isValidKeyType(type)) {
+            return ResponseEntity.badRequest().body(ApiResponse.error("Invalid key type. Must be RSA or ED25519"));
+        }
+
         var history = keyRotationService.getKeyHistory(partnerId, type);
         return ResponseEntity.ok(ApiResponse.success("Success", history));
+    }
+
+    private boolean isValidKeyType(String type) {
+        return "RSA".equalsIgnoreCase(type) || "ED25519".equalsIgnoreCase(type);
     }
 }

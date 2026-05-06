@@ -5,6 +5,10 @@ import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.*;
 
+import java.security.spec.RSAPrivateKeySpec;
+import java.security.spec.RSAPublicKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import javax.crypto.Cipher;
 
 public class RsaKeyUtils {
@@ -23,21 +27,35 @@ public class RsaKeyUtils {
     public static PublicKey parseRSAPublicKey(byte[] x509Encoded) throws Exception {
         KeyFactory factory = KeyFactory.getInstance("RSA");
         X509EncodedKeySpec keySpec = new X509EncodedKeySpec(x509Encoded);
-        return factory.generatePublic(keySpec);
+        PublicKey key = factory.generatePublic(keySpec);
+        if (!(key instanceof RSAPublicKey)) {
+            throw new IllegalArgumentException("Decoded key is not an RSA public key");
+        }
+        return key;
     }
 
     public static PrivateKey parseRSAPrivateKey(byte[] pkcs8Encoded) throws Exception {
         KeyFactory factory = KeyFactory.getInstance("RSA");
         PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(pkcs8Encoded);
-        return factory.generatePrivate(keySpec);
+        PrivateKey key = factory.generatePrivate(keySpec);
+        if (!(key instanceof RSAPrivateKey)) {
+            throw new IllegalArgumentException("Decoded key is not an RSA private key");
+        }
+        return key;
     }
 
     public static RSAPublicKeySpec extractRSAPublicKeySpec(PublicKey publicKey) {
+        if (!(publicKey instanceof RSAPublicKey)) {
+            throw new IllegalArgumentException("Key is not an RSA public key: " + publicKey.getClass().getName());
+        }
         RSAPublicKey rsaKey = (RSAPublicKey) publicKey;
         return new RSAPublicKeySpec(rsaKey.getModulus(), rsaKey.getPublicExponent());
     }
 
     public static RSAPrivateKeySpec extractRSAPrivateKeySpec(PrivateKey privateKey) {
+        if (!(privateKey instanceof RSAPrivateKey)) {
+            throw new IllegalArgumentException("Key is not an RSA private key: " + privateKey.getClass().getName());
+        }
         RSAPrivateKey rsaKey = (RSAPrivateKey) privateKey;
         return new RSAPrivateKeySpec(rsaKey.getModulus(), rsaKey.getPrivateExponent());
     }
@@ -55,10 +73,10 @@ public class RsaKeyUtils {
     }
 
     public static String toBase64(byte[] data) {
-        return java.util.Base64.getEncoder().encodeToString(data);
+        return Base64.getEncoder().encodeToString(data);
     }
 
     public static byte[] fromBase64(String base64) {
-        return java.util.Base64.getDecoder().decode(base64);
+        return Base64.getDecoder().decode(base64);
     }
 }

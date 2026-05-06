@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /**
  * Orchestrator service for all cryptographic operations.
@@ -29,17 +30,21 @@ public class CryptoApplicationService {
     private final KeyService keyService;
     private final AuditService auditService;
     private final EntityMapper entityMapper;
+    private final ReplayProtectionService replayProtectionService;
     private final ObjectMapper objectMapper;
 
     public CryptoApplicationService(SecureEnvelopeService envelopeService, 
                                     KeyService keyService, 
                                     AuditService auditService, 
-                                    EntityMapper entityMapper) {
+                                    EntityMapper entityMapper,
+                                    ReplayProtectionService replayProtectionService,
+                                    ObjectMapper objectMapper) {
         this.envelopeService = envelopeService;
         this.keyService = keyService;
         this.auditService = auditService;
         this.entityMapper = entityMapper;
-        this.objectMapper = new ObjectMapper();
+        this.replayProtectionService = replayProtectionService;
+        this.objectMapper = objectMapper;
     }
 
     public EncryptResponse encrypt(EncryptRequest request) throws Exception {
@@ -54,15 +59,18 @@ public class CryptoApplicationService {
         Ed25519PrivateKeyParameters signingKey = keyService.getSenderSigningKey(senderId);
         RSAKeyParameters recipientPubKey = keyService.getRecipientPublicKey(request.recipientId());
 
+        String computedSenderFingerprint = computeEd25519Fingerprint(signingKey);
+        log.debug("[SECURITY] Computed sender fingerprint: {}", computedSenderFingerprint);
+
         // 2. Execute Crypto Strategy
         byte[] payloadBytes = request.payload().getBytes(StandardCharsets.UTF_8);
         String envelopeJson = envelopeService.encryptPayloadDirect(
                 payloadBytes,
                 request.payloadType(),
                 senderId,
-                request.senderKeyFingerprint(),
+                computedSenderFingerprint,
                 request.recipientId(),
-                request.recipientKeyFingerprint(),
+                null, // Recipient fingerprint is now derived internally or not needed at this stage
                 signingKey,
                 recipientPubKey
         );
@@ -83,13 +91,30 @@ public class CryptoApplicationService {
         String envelopeJson = new String(entityMapper.fromBase64(request.envelope()), StandardCharsets.UTF_8);
         SecureEnvelope envelope = objectMapper.readValue(envelopeJson, SecureEnvelope.class);
         
-        String recipientId = envelope.getRecipient().getId();
-        String senderId = envelope.getSender().getId();
+        String recipientId = envelope.getRecipient().id();
+        String senderId = envelope.getSender().id();
+        String authenticatedId = SenderContext.getSenderId();
+
+        // Fix IDOR/Authorization #178: Only the intended recipient can decrypt
+        if (!recipientId.equals(authenticatedId)) {
+            log.error("[SECURITY_BREACH] Identity mismatch: auth={} recipientId={}", authenticatedId, recipientId);
+            throw new SecurityException("Unauthorized: You are not the intended recipient of this message");
+        }
+
+        // Fix Replay Attack #177: Validate MessageId (used as nonce) and timestamp
+        if (!replayProtectionService.isValidNonce(envelope.getMessageId(), recipientId)) {
+            log.error("[SECURITY_BREACH] Replay attack or invalid nonce detected for messageId={}", envelope.getMessageId());
+            throw new SecurityException("Invalid or replayed message");
+        }
+
+        if (!replayProtectionService.validateTimestamp(Long.parseLong(envelope.getTimestamp()), 300)) {
+            log.error("[SECURITY_BREACH] Message timestamp expired: {}", envelope.getTimestamp());
+            throw new SecurityException("Message expired");
+        }
 
         log.info("[CRYPTO_OP] Decrypt: sender={} recipient={}", senderId, recipientId);
 
         // 2. Resolve Keys (Cached & Ownership Verified)
-        // Note: keyService.getOurDecryptionKey checks that SenderContext.getSenderId() == recipientId
         RSAKeyParameters decryptionKey = keyService.getOurDecryptionKey(recipientId);
         Ed25519PublicKeyParameters verificationKey = keyService.getSenderVerificationKey(senderId);
 
@@ -103,8 +128,25 @@ public class CryptoApplicationService {
         String payload = new String(decryptedPayload, StandardCharsets.UTF_8);
 
         // 4. Audit
-        auditService.logDecrypt(envelope.getCorrelationId(), senderId, recipientId, envelope.getMessageType(), true);
+        auditService.logDecrypt(envelope.getCorrelationId(), senderId, recipientId, envelope.getPayloadType(), true);
 
-        return new DecryptResponse(envelope.getMessageType(), payload);
+        return new DecryptResponse(envelope.getPayloadType(), payload);
+    }
+
+    private String computeEd25519Fingerprint(Ed25519PrivateKeyParameters privateKey) {
+        try {
+            Ed25519PublicKeyParameters publicKey = privateKey.generatePublicKey();
+            byte[] publicKeyBytes = publicKey.getEncoded();
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] fingerprintBytes = digest.digest(publicKeyBytes);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : fingerprintBytes) {
+                sb.append(String.format("%02X", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            log.error("[SECURITY] Failed to compute fingerprint", e);
+            throw new SecurityException("Failed to compute key fingerprint");
+        }
     }
 }

@@ -42,6 +42,9 @@ public class EncryptionService {
     private final Cache<String, PublicKey> publicKeyCache;
     private final Cache<String, PrivateKey> privateKeyCache;
 
+    // GCM limit: 2^32 - 1 blocks = ~64GB. We set a safe limit of 32GB per stream.
+    private static final long MAX_GCM_STREAM_SIZE = 32L * 1024 * 1024 * 1024;
+
     public EncryptionService() {
         this.secureRandom = new SecureRandom();
         this.publicKeyCache = Caffeine.newBuilder()
@@ -106,16 +109,29 @@ public class EncryptionService {
 
         byte[] inBuf = new byte[8192]; // 8KB chunks
         byte[] outBuf = new byte[cipher.getOutputSize(inBuf.length)];
-        int bytesRead;
-        while ((bytesRead = input.read(inBuf)) != -1) {
-            int outLen = cipher.processBytes(inBuf, 0, bytesRead, outBuf, 0);
-            if (outLen > 0) {
-                output.write(outBuf, 0, outLen);
+        long totalBytesProcessed = 0;
+        
+        try {
+            int bytesRead;
+            while ((bytesRead = input.read(inBuf)) != -1) {
+                totalBytesProcessed += bytesRead;
+                if (totalBytesProcessed > MAX_GCM_STREAM_SIZE) {
+                    throw new SecurityException("Stream size exceeds maximum safe limit for AES-GCM (32GB)");
+                }
+                
+                int outLen = cipher.processBytes(inBuf, 0, bytesRead, outBuf, 0);
+                if (outLen > 0) {
+                    output.write(outBuf, 0, outLen);
+                }
+                Arrays.fill(inBuf, (byte) 0);
             }
-        }
-        int finalLen = cipher.doFinal(outBuf, 0);
-        if (finalLen > 0) {
-            output.write(outBuf, 0, finalLen);
+            int finalLen = cipher.doFinal(outBuf, 0);
+            if (finalLen > 0) {
+                output.write(outBuf, 0, finalLen);
+            }
+        } finally {
+            Arrays.fill(inBuf, (byte) 0);
+            Arrays.fill(outBuf, (byte) 0);
         }
     }
 
@@ -135,16 +151,29 @@ public class EncryptionService {
 
         byte[] inBuf = new byte[8192];
         byte[] outBuf = new byte[cipher.getOutputSize(inBuf.length)];
-        int bytesRead;
-        while ((bytesRead = input.read(inBuf)) != -1) {
-            int outLen = cipher.processBytes(inBuf, 0, bytesRead, outBuf, 0);
-            if (outLen > 0) {
-                output.write(outBuf, 0, outLen);
+        long totalBytesProcessed = 0;
+
+        try {
+            int bytesRead;
+            while ((bytesRead = input.read(inBuf)) != -1) {
+                totalBytesProcessed += bytesRead;
+                if (totalBytesProcessed > MAX_GCM_STREAM_SIZE) {
+                    throw new SecurityException("Stream size exceeds maximum safe limit for AES-GCM (32GB)");
+                }
+
+                int outLen = cipher.processBytes(inBuf, 0, bytesRead, outBuf, 0);
+                if (outLen > 0) {
+                    output.write(outBuf, 0, outLen);
+                }
+                Arrays.fill(inBuf, (byte) 0);
             }
-        }
-        int finalLen = cipher.doFinal(outBuf, 0);
-        if (finalLen > 0) {
-            output.write(outBuf, 0, finalLen);
+            int finalLen = cipher.doFinal(outBuf, 0);
+            if (finalLen > 0) {
+                output.write(outBuf, 0, finalLen);
+            }
+        } finally {
+            Arrays.fill(inBuf, (byte) 0);
+            Arrays.fill(outBuf, (byte) 0);
         }
     }
 
@@ -181,7 +210,8 @@ public class EncryptionService {
         try {
             length += cipher.doFinal(output, length);
         } catch (InvalidCipherTextException e) {
-            throw new IllegalStateException("Decryption failed: " + e.getMessage(), e);
+            // Sanitize error message to prevent leaking details about decryption failure cause
+            throw new IllegalStateException("Decryption failed - integrity check failed", e);
         }
 
         return Arrays.copyOf(output, length);
@@ -200,20 +230,6 @@ public class EncryptionService {
         OAEPEncoding decoder = new OAEPEncoding(new RSAEngine(), new SHA256Digest(), new SHA256Digest(), null);
         decoder.init(false, rsaPrivateKey);
         return decoder.processBlock(encryptedSessionKey, 0, encryptedSessionKey.length);
-    }
-
-    @Deprecated
-    public byte[] encryptSessionKey(byte[] sessionKey, PublicKey publicKey) throws Exception {
-        Cipher cipher = Cipher.getInstance(RSA_TRANSFORMATION);
-        cipher.init(Cipher.ENCRYPT_MODE, publicKey);
-        return cipher.doFinal(sessionKey);
-    }
-
-    @Deprecated
-    public byte[] decryptSessionKey(byte[] encryptedSessionKey, PrivateKey privateKey) throws Exception {
-        Cipher cipher = Cipher.getInstance(RSA_TRANSFORMATION);
-        cipher.init(Cipher.DECRYPT_MODE, privateKey);
-        return cipher.doFinal(encryptedSessionKey);
     }
 
     private PublicKey convertBCToJavaPublicKey(RSAKeyParameters bcKey) throws Exception {

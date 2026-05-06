@@ -23,29 +23,13 @@ public class CryptoGatewayController {
     }
 
     @PostMapping("/encrypt")
-    public ResponseEntity<EncryptResponse> encrypt(@Valid @RequestBody EncryptRequest request) {
-        try {
-            return ResponseEntity.ok(cryptoApplicationService.encrypt(request));
-        } catch (SecurityException e) {
-            log.warn("[SECURITY] Encrypt blocked: {}", e.getMessage());
-            return ResponseEntity.status(403).build();
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.internalServerError().build();
-        }
+    public ResponseEntity<EncryptResponse> encrypt(@Valid @RequestBody EncryptRequest request) throws Exception {
+        return ResponseEntity.ok(cryptoApplicationService.encrypt(request));
     }
 
     @PostMapping("/decrypt")
-    public ResponseEntity<DecryptResponse> decrypt(@Valid @RequestBody DecryptRequest request) {
-        try {
-            return ResponseEntity.ok(cryptoApplicationService.decrypt(request));
-        } catch (SecurityException e) {
-            log.warn("[SECURITY] Decrypt blocked: {}", e.getMessage());
-            return ResponseEntity.status(403).build();
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.internalServerError().build();
-        }
+    public ResponseEntity<DecryptResponse> decrypt(@Valid @RequestBody DecryptRequest request) throws Exception {
+        return ResponseEntity.ok(cryptoApplicationService.decrypt(request));
     }
 
     @GetMapping("/health")

@@ -25,6 +25,14 @@ public class SenderContext {
         }
     }
 
+    public static Identity getIdentity() {
+        return IDENTITY.get();
+    }
+
+    public static void setIdentity(Identity identity) {
+        IDENTITY.set(identity);
+    }
+
     public static String getSenderId() {
         Identity identity = IDENTITY.get();
         return identity != null ? identity.senderId : null;
@@ -48,11 +56,11 @@ public class SenderContext {
         PGP_SIGNATURE
     }
 
-    private static class Identity {
-        String senderId;
-        AuthMethod authMethod;
+    public static class Identity {
+        public String senderId;
+        public AuthMethod authMethod;
 
-        Identity(String senderId) {
+        public Identity(String senderId) {
             this.senderId = senderId;
         }
     }

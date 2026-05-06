@@ -32,7 +32,7 @@ public class StreamingCryptoController {
             log.warn("[SECURITY] Streaming encrypt blocked: {}", e.getMessage());
             response.setStatus(403);
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("[INTERNAL_ERROR] Streaming encrypt failed", e);
             response.setStatus(500);
         }
     }
@@ -49,7 +49,7 @@ public class StreamingCryptoController {
             log.warn("[SECURITY] Streaming decrypt blocked: {}", e.getMessage());
             response.setStatus(403);
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("[INTERNAL_ERROR] Streaming decrypt failed", e);
             response.setStatus(500);
         }
     }

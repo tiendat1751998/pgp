@@ -8,13 +8,24 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.regex.Pattern;
 
+/**
+ * Manages database partitions for audit logs.
+ * Hardened with SQL injection protection and consistent UTC time handling.
+ */
 @Component
 public class PartitionManager {
 
     private static final Logger log = LoggerFactory.getLogger(PartitionManager.class);
+    private static final Pattern PARTITION_NAME_PATTERN = Pattern.compile("^p[0-9]{10}$");
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHH").withZone(ZoneId.of("UTC"));
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -33,7 +44,7 @@ public class PartitionManager {
         createInitialPartitions();
     }
 
-    @Scheduled(cron = "0 0 * * * *")  // Every hour at minute 0
+    @Scheduled(cron = "0 0 * * * *")
     public void managePartitions() {
         log.info("Running partition management...");
         createFuturePartitions();
@@ -49,25 +60,31 @@ public class PartitionManager {
     }
 
     public void createFuturePartitions() {
-        String sql = """
-            SELECT PARTITION_NAME 
+        String checkSql = """
+            SELECT COUNT(*) 
             FROM information_schema.PARTITIONS 
             WHERE TABLE_SCHEMA = DATABASE() 
             AND TABLE_NAME = 'audit_logs' 
             AND PARTITION_NAME = ?
             """;
 
-        LocalDateTime now = LocalDateTime.now();
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMddHH");
+        Instant now = Instant.now();
 
         for (int i = 1; i <= preCreateHours; i++) {
-            LocalDateTime futureHour = now.plusHours(i);
-            String partitionName = "p" + futureHour.format(formatter);
+            Instant futureInstant = now.plus(i, ChronoUnit.HOURS);
+            String partitionName = "p" + FORMATTER.format(futureInstant);
 
             try {
-                Integer count = jdbcTemplate.queryForObject(sql, Integer.class, partitionName);
+                // Fix Logic Bug #151: Use COUNT(*) instead of selecting PARTITION_NAME
+                Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, partitionName);
                 if (count == null || count == 0) {
-                    long unixTimestamp = futureHour.atZone(java.time.ZoneId.of("UTC")).toEpochSecond();
+                    long unixTimestamp = futureInstant.truncatedTo(ChronoUnit.HOURS).plus(1, ChronoUnit.HOURS).getEpochSecond();
+                    
+                    // Fix SQLi #150: Strict regex validation before string formatting
+                    if (!PARTITION_NAME_PATTERN.matcher(partitionName).matches()) {
+                        throw new SecurityException("Invalid partition name generated: " + partitionName);
+                    }
+
                     String alterSql = String.format(
                         "ALTER TABLE audit_logs ADD PARTITION (PARTITION %s VALUES LESS THAN (%d))",
                         partitionName, unixTimestamp
@@ -76,38 +93,42 @@ public class PartitionManager {
                     log.info("Created partition: {}", partitionName);
                 }
             } catch (Exception e) {
-                log.debug("Partition {} may already exist: {}", partitionName, e.getMessage());
+                log.debug("Partition {} creation attempted: {}", partitionName, e.getMessage());
             }
         }
     }
 
     public void dropOldPartitions() {
-        String sql = """
+        String listSql = """
             SELECT PARTITION_NAME, PARTITION_DESCRIPTION
             FROM information_schema.PARTITIONS 
             WHERE TABLE_SCHEMA = DATABASE() 
             AND TABLE_NAME = 'audit_logs' 
             AND PARTITION_NAME LIKE 'p20%'
-            AND PARTITION_DESCRIPTION < UNIX_TIMESTAMP(DATE_SUB(NOW(), INTERVAL ? DAY))
             """;
 
         try {
-            var partitions = jdbcTemplate.query(sql, (rs, row) -> new PartitionInfo(
+            long cutoffTimestamp = Instant.now().minus(retentionDays, ChronoUnit.DAYS).getEpochSecond();
+            
+            var partitions = jdbcTemplate.query(listSql, (rs, row) -> new PartitionInfo(
                 rs.getString("PARTITION_NAME"),
                 rs.getLong("PARTITION_DESCRIPTION")
-            ), retentionDays);
+            ));
 
             for (PartitionInfo p : partitions) {
-                try {
-                    String dropSql = String.format("ALTER TABLE audit_logs DROP PARTITION %s", p.name);
-                    jdbcTemplate.execute(dropSql);
-                    log.info("Dropped old partition: {}", p.name);
-                } catch (Exception e) {
-                    log.warn("Failed to drop partition {}: {}", p.name, e.getMessage());
+                // Only drop if it matches pattern and is older than retention
+                if (PARTITION_NAME_PATTERN.matcher(p.name).matches() && p.description < cutoffTimestamp) {
+                    try {
+                        String dropSql = String.format("ALTER TABLE audit_logs DROP PARTITION %s", p.name);
+                        jdbcTemplate.execute(dropSql);
+                        log.info("Dropped old partition: {}", p.name);
+                    } catch (Exception e) {
+                        log.warn("Failed to drop partition {}: {}", p.name, e.getMessage());
+                    }
                 }
             }
         } catch (Exception e) {
-            log.debug("No partitions to drop: {}", e.getMessage());
+            log.debug("Partition cleanup error: {}", e.getMessage());
         }
     }
 

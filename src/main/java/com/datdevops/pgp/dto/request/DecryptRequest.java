@@ -6,8 +6,5 @@ import jakarta.validation.constraints.Size;
 public record DecryptRequest(
     @NotBlank(message = "envelope is required")
     @Size(max = 2097152, message = "envelope must not exceed 2MB")
-    String envelope,
-
-    @Size(max = 10000, message = "senderPublicKey is too large")
-    String senderPublicKey
+    String envelope
 ) {}

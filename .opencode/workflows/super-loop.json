@@ -1,0 +1,19 @@
+{
+  "name": "super-loop",
+  "maxIterations": 3,
+
+  "steps": [
+    { "agent": "planner", "input": "user" },
+    { "agent": "coder" },
+    { "agent": "reviewer" },
+    { "agent": "tester" },
+    {
+      "agent": "coder",
+      "condition": "reviewer.verdict == 'REJECTED' || tester.verdict == 'FAIL'"
+    },
+    { "agent": "reviewer" },
+    { "agent": "tester" }
+  ],
+
+  "stopCondition": "reviewer.verdict == 'APPROVED' && tester.verdict == 'PASS'"
+}

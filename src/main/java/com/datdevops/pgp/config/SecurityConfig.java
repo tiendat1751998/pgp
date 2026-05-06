@@ -8,6 +8,9 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
 /**
  * Security configuration for M2M Crypto Gateway.
  * Authentication is handled entirely by MTLSAuthenticationFilter (servlet filter).
@@ -24,16 +27,17 @@ public class SecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/actuator/health").permitAll()
+                .requestMatchers("/actuator/**").hasRole("ADMIN") // Protect sensitive ops
                 .anyRequest().authenticated()
             )
-            .x509(x509 -> x509
-                .subjectPrincipalRegex("CN=(.*?)(?:,|$)")
-                .userDetailsService(cn -> org.springframework.security.core.userdetails.User.builder()
-                    .username(cn)
-                    .password("{noop}")
-                    .authorities("ROLE_PARTNER")
-                    .build()
+            .headers(headers -> headers
+                .frameOptions(frame -> frame.deny())
+                .contentTypeOptions(content -> {})
+                .httpStrictTransportSecurity(hsts -> hsts
+                    .includeSubDomains(true)
+                    .maxAgeInSeconds(31536000)
                 )
+                .cacheControl(cache -> {})
             );
 
         return http.build();

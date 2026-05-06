@@ -10,8 +10,8 @@ import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 import java.time.Duration;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
@@ -20,14 +20,14 @@ public class ReplayProtectionService {
     private static final Logger log = LoggerFactory.getLogger(ReplayProtectionService.class);
     private static final String NONCE_PREFIX = "pgp:nonce:";
 
-    @Value("${app.replay-protection.ttl-seconds:300}")
+    @Value("${app.replay-protection.ttl-seconds:180}")
     private long ttlSeconds;
 
     @Value("${app.replay-protection.max-size:10000}")
     private int maxCacheSize;
 
     private final RedisTemplate<String, Long> redisTemplate;
-    private final ConcurrentMap<String, Long> localCache;
+    private final Cache<String, Long> localCache;
 
     private volatile boolean useRedis = true;
     private final AtomicInteger reconnectAttempts = new AtomicInteger(0);
@@ -36,9 +36,15 @@ public class ReplayProtectionService {
     @Value("${app.replay-protection.strict-mode:false}")
     private boolean strictMode;
 
+    private static final int MIN_NONCE_LENGTH = 16;
+    private static final int MAX_NONCE_LENGTH = 256;
+
     public ReplayProtectionService(RedisTemplate<String, Long> redisTemplate) {
         this.redisTemplate = redisTemplate;
-        this.localCache = new ConcurrentHashMap<>();
+        this.localCache = Caffeine.newBuilder()
+                .maximumSize(maxCacheSize > 0 ? maxCacheSize : 10000)
+                .expireAfterWrite(Duration.ofSeconds(ttlSeconds > 0 ? ttlSeconds : 180))
+                .build();
         initMode();
     }
 
@@ -72,7 +78,13 @@ public class ReplayProtectionService {
     }
 
     public boolean isValidNonce(String nonce, String recipientId) {
-        if (nonce == null || nonce.isEmpty()) {
+        if (!validateNonceFormat(nonce)) {
+            log.warn("[REPLAY] Invalid nonce format detected");
+            return false;
+        }
+
+        if (recipientId == null || recipientId.isBlank()) {
+            log.warn("[REPLAY] Invalid recipient ID");
             return false;
         }
 
@@ -97,10 +109,8 @@ public class ReplayProtectionService {
     }
 
     private boolean localModeIsValid(String key) {
-        if (localCache.size() >= maxCacheSize) {
-            cleanupLocal();
-        }
-        Long previous = localCache.putIfAbsent(key, System.currentTimeMillis());
+        // Use atomic putIfAbsent to prevent race conditions in local mode
+        Long previous = localCache.asMap().putIfAbsent(key, System.currentTimeMillis());
         return previous == null;
     }
 
@@ -142,7 +152,7 @@ public class ReplayProtectionService {
                 log.warn("Redis error in clear: {}", e.getMessage());
             }
         }
-        localCache.clear();
+        localCache.invalidateAll();
     }
 
     private void deleteKeysWithScan(String pattern) {
@@ -160,8 +170,8 @@ public class ReplayProtectionService {
     }
 
     private void cleanupLocal() {
-        long cutoff = System.currentTimeMillis() - (ttlSeconds * 1000);
-        localCache.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+        // Caffeine handles cleanup automatically and efficiently.
+        localCache.cleanUp();
     }
 
     public int getCacheSize() {
@@ -170,10 +180,9 @@ public class ReplayProtectionService {
                 return countKeysWithScan(NONCE_PREFIX + "*");
             } catch (Exception e) {
                 log.warn("Redis error getting cache size: {}", e.getMessage());
-                useRedis = false;
             }
         }
-        return localCache.size();
+        return (int) localCache.estimatedSize();
     }
 
     private int countKeysWithScan(String pattern) {
@@ -225,6 +234,25 @@ public class ReplayProtectionService {
 
     private String buildKey(String nonce, String recipientId) {
         return NONCE_PREFIX + nonce + "|" + recipientId;
+    }
+
+    private boolean validateNonceFormat(String nonce) {
+        if (nonce == null || nonce.isEmpty()) {
+            return false;
+        }
+
+        if (nonce.length() < MIN_NONCE_LENGTH || nonce.length() > MAX_NONCE_LENGTH) {
+            log.warn("[REPLAY] Nonce length out of bounds: {} (min: {}, max: {})",
+                    nonce.length(), MIN_NONCE_LENGTH, MAX_NONCE_LENGTH);
+            return false;
+        }
+
+        if (!nonce.matches("^[a-zA-Z0-9_-]+$")) {
+            log.warn("[REPLAY] Nonce contains invalid characters");
+            return false;
+        }
+
+        return true;
     }
 
     public static class ValidationResult {
