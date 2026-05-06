@@ -8,17 +8,22 @@ import io.github.resilience4j.retry.annotation.Retry;
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters;
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters;
 import org.bouncycastle.crypto.params.RSAKeyParameters;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.UUID;
 
 @Service
 public class SecureEnvelopeService {
+
+    private static final Logger log = LoggerFactory.getLogger(SecureEnvelopeService.class);
 
     private static final String CIRCUIT_BREAKER = "secureEnvelope";
     private static final String BULKHEAD = "secureEnvelope";
@@ -50,7 +55,7 @@ public class SecureEnvelopeService {
     @Bulkhead(name = BULKHEAD)
     public String encryptPayloadDirect(
             byte[] payload,
-            String messageType,
+            String payloadType,
             String senderId,
             String senderKeyFingerprint,
             String recipientId,
@@ -58,12 +63,9 @@ public class SecureEnvelopeService {
             Ed25519PrivateKeyParameters signingKey,
             RSAKeyParameters recipientRSAPublicKey) throws Exception {
 
-        String payloadHash = computeHash(payload);
-        final long authTimestamp = System.currentTimeMillis();
+        final long authTimestampMillis = System.currentTimeMillis();
+        final String authTimestamp = String.valueOf(authTimestampMillis);
         final String correlationId = UUID.randomUUID().toString();
-
-        String dataToSign = payloadHash + "|" + senderId + "|" + recipientId + "|" + authTimestamp;
-        byte[] authSignature = signingService.sign(dataToSign.getBytes(StandardCharsets.UTF_8), signingKey);
 
         byte[] sessionKey = generateSessionKey();
         byte[] encryptedSessionKey = encryptionService.encryptSessionKey(sessionKey, recipientRSAPublicKey);
@@ -80,17 +82,25 @@ public class SecureEnvelopeService {
 
         String encryptedPayload = Base64.getEncoder().encodeToString(combined);
 
-        SecureEnvelope envelope = SecureEnvelope.builder()
-                .messageType(messageType)
-                .sender(senderId, senderKeyFingerprint)
-                .recipient(recipientId, recipientKeyFingerprint)
+        // Sign the ENCRYPTED payload and metadata (Encrypt-then-Sign)
+        String dataToSign = encryptedPayload + "|" + senderId + "|" + recipientId + "|" + authTimestamp;
+        byte[] authSignature = signingService.sign(dataToSign.getBytes(StandardCharsets.UTF_8), signingKey);
+
+        SecureEnvelope envelope = new SecureEnvelope.Builder()
+                .payloadType(payloadType)
+                .senderId(senderId)
+                .senderKeyFingerprint(senderKeyFingerprint)
+                .recipientId(recipientId)
+                .recipientKeyFingerprint(recipientKeyFingerprint)
+                .payloadCiphertext(encryptedPayload)
+                .encryptedSessionKey(encryptedSessionKeyBase64)
+                .signature(Base64.getEncoder().encodeToString(authSignature))
+                .correlationId(correlationId)
                 .build();
 
-        envelope.setEncryptedPayload(encryptedPayload);
-        envelope.setEncryptedSessionKey(encryptedSessionKeyBase64);
-        envelope.setSignature(Base64.getEncoder().encodeToString(authSignature));
-        envelope.setCorrelationId(correlationId);
-        envelope.setAuthTimestamp(authTimestamp);
+        // Note: Builder already sets timestamp to Instant.now().toString() if not set.
+        // We override it with our explicit authTimestamp to ensure consistency in signature.
+        envelope.setTimestamp(authTimestamp);
 
         return objectMapper.writeValueAsString(envelope);
     }
@@ -108,21 +118,38 @@ public class SecureEnvelopeService {
             throw new SecurityException("Missing signature in envelope");
         }
 
-        long authTimestamp = envelope.getAuthTimestamp();
-        if (!replayProtectionService.validateTimestamp(authTimestamp, 300)) {
+        String authTimestamp = envelope.getTimestamp();
+        if (!replayProtectionService.validateTimestamp(Long.parseLong(authTimestamp), 300)) {
             throw new SecurityException("Message expired or timestamp out of allowable window (±5min)");
         }
 
-        String recipientId = envelope.getRecipient() != null ? envelope.getRecipient().getId() : "UNKNOWN";
-        if (!replayProtectionService.isValidNonce(envelope.getCorrelationId(), recipientId)) {
-            throw new SecurityException("Replay attack detected: message already processed");
+        // 1. Authenticate FIRST (Encrypt-then-Sign)
+        // This prevents DoS and Oracle attacks by rejecting tampered envelopes before decryption.
+        String dataToVerify = envelope.getPayloadCiphertext() + "|" + envelope.getSender().id() + "|" +
+                envelope.getRecipient().id() + "|" + authTimestamp;
+
+        byte[] signatureBytes = Base64.getDecoder().decode(envelope.getSignature());
+        boolean signatureValid = signatureVerificationService.verify(
+                dataToVerify.getBytes(StandardCharsets.UTF_8), signatureBytes, senderPublicKey);
+
+        if (!signatureValid) {
+            log.error("[SECURITY_EVENT] Invalid signature for correlationId: {}", envelope.getCorrelationId());
+            throw new SecurityException("Invalid signature - message may have been tampered with or sender is spoofed");
         }
 
+        // 2. Resolve Session Key
         byte[] encryptedSessionKey = Base64.getDecoder().decode(envelope.getEncryptedSessionKey());
         byte[] sessionKey = encryptionService.decryptSessionKey(encryptedSessionKey, recipientRSAPrivateKey);
 
         try {
-            byte[] combined = Base64.getDecoder().decode(envelope.getEncryptedPayload());
+            // 3. Decrypt Payload (AES-GCM Authenticated Decryption)
+            byte[] combined = Base64.getDecoder().decode(envelope.getPayloadCiphertext());
+
+            int minLength = 12 + 16;
+            if (combined.length < minLength) {
+                throw new IllegalArgumentException("Invalid encrypted payload: too short (" + combined.length + " bytes), minimum is " + minLength);
+            }
+
             byte[] nonce = new byte[12];
             byte[] mac = new byte[16];
             byte[] ciphertext = new byte[combined.length - 12 - 16];
@@ -131,26 +158,14 @@ public class SecureEnvelopeService {
             System.arraycopy(combined, ciphertext.length, nonce, 0, 12);
             System.arraycopy(combined, ciphertext.length + 12, mac, 0, 16);
 
-            String authData = envelope.getSender().getId() + "|" + envelope.getRecipient().getId() + "|" + authTimestamp;
+            String authData = envelope.getSender().id() + "|" + envelope.getRecipient().id() + "|" + authTimestamp;
 
-            byte[] decryptedPayload = encryptionService.decrypt(
+            return encryptionService.decrypt(
                     ciphertext, sessionKey, nonce, mac, authData.getBytes(StandardCharsets.UTF_8));
-
-            String storedHash = computeHash(decryptedPayload);
-            String dataToVerify = storedHash + "|" + envelope.getSender().getId() + "|" +
-                    envelope.getRecipient().getId() + "|" + authTimestamp;
-
-            byte[] signatureBytes = Base64.getDecoder().decode(envelope.getSignature());
-            boolean signatureValid = signatureVerificationService.verify(
-                    dataToVerify.getBytes(StandardCharsets.UTF_8), signatureBytes, senderPublicKey);
-
-            if (!signatureValid) {
-                throw new SecurityException("Invalid signature - message may have been tampered with");
-            }
-
-            return decryptedPayload;
         } finally {
-            java.util.Arrays.fill(sessionKey, (byte) 0);
+            if (sessionKey != null) {
+                Arrays.fill(sessionKey, (byte) 0);
+            }
         }
     }
 

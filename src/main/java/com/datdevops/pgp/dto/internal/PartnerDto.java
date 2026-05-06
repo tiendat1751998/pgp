@@ -19,8 +19,6 @@ public record PartnerDto(
 
     String keyFingerprint,
 
-    String internalKeystorePassword,
-
     boolean active,
 
     Long createdAt,

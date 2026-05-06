@@ -1,5 +1,7 @@
 package com.datdevops.pgp.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -7,6 +9,8 @@ import java.util.Set;
 
 @Service
 public class CryptoStrategyService {
+
+    private static final Logger log = LoggerFactory.getLogger(CryptoStrategyService.class);
 
     public enum CryptoType {
         PGP,
@@ -20,15 +24,26 @@ public class CryptoStrategyService {
     @Value("${app.crypto.allowed-types:PGP}")
     private String allowedTypes;
 
+    private static final Set<String> FORBIDDEN_ALGORITHMS = Set.of(
+            "DES", "DESEDE", "RC4", "RC2", "BLOWFISH",
+            "RSA_PKCS1V15", "RSA/ECB/PKCS1Padding"
+    );
+
     public CryptoType getCryptoType(String requestedType) {
         if (requestedType == null || requestedType.isBlank()) {
             return CryptoType.valueOf(defaultCryptoType);
         }
 
-        Set<String> allowed = Set.of(allowedTypes.split(","));
         String upperRequested = requestedType.toUpperCase();
 
+        if (FORBIDDEN_ALGORITHMS.contains(upperRequested)) {
+            log.error("[SECURITY_BREACH] Forbidden algorithm requested: {}", requestedType);
+            throw new SecurityException("Algorithm not allowed: " + requestedType);
+        }
+
+        Set<String> allowed = Set.of(allowedTypes.split(","));
         if (!allowed.contains(upperRequested)) {
+            log.warn("[SECURITY] Crypto type not in allowlist: {}", requestedType);
             throw new IllegalArgumentException("Crypto type not allowed: " + requestedType);
         }
 

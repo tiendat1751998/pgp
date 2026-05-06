@@ -5,9 +5,15 @@ import org.springframework.stereotype.Component;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.security.SecureRandom;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.spec.KeySpec;
 import java.util.Base64;
 
+/**
+ * Service for secure password hashing using PBKDF2.
+ * Hardened with static SecureRandom and high iteration count.
+ */
 @Component
 public class AppPasswordEncoder {
 
@@ -15,10 +21,13 @@ public class AppPasswordEncoder {
     private static final int SALT_LENGTH = 32;
     private static final int KEY_LENGTH = 256;
     private static final int ITERATIONS = 100000;
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     public String encode(String rawPassword) {
+        if (rawPassword == null) return null;
+        
         byte[] salt = new byte[SALT_LENGTH];
-        new SecureRandom().nextBytes(salt);
+        SECURE_RANDOM.nextBytes(salt);
 
         try {
             KeySpec spec = new PBEKeySpec(rawPassword.toCharArray(), salt, ITERATIONS, KEY_LENGTH);
@@ -35,11 +44,11 @@ public class AppPasswordEncoder {
     }
 
     public boolean matches(String rawPassword, String encodedPassword) {
+        if (rawPassword == null || encodedPassword == null) return false;
+        
         try {
             String[] parts = encodedPassword.split(":");
-            if (parts.length != 2) {
-                return false;
-            }
+            if (parts.length != 2) return false;
 
             byte[] salt = Base64.getDecoder().decode(parts[0]);
             byte[] storedHash = Base64.getDecoder().decode(parts[1]);
@@ -48,7 +57,7 @@ public class AppPasswordEncoder {
             SecretKeyFactory factory = SecretKeyFactory.getInstance(ALGORITHM);
             byte[] computedHash = factory.generateSecret(spec).getEncoded();
 
-            return java.security.MessageDigest.isEqual(storedHash, computedHash);
+            return MessageDigest.isEqual(storedHash, computedHash);
         } catch (Exception e) {
             return false;
         }

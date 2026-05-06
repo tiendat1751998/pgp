@@ -11,6 +11,9 @@ import org.bouncycastle.crypto.params.RSAKeyParameters;
 import org.springframework.stereotype.Component;
 
 import java.security.PublicKey;
+import java.security.KeyFactory;
+import java.security.spec.RSAPublicKeySpec;
+import java.security.spec.RSAPrivateKeySpec;
 import java.security.PrivateKey;
 import java.util.Base64;
 import java.util.Map;
@@ -19,15 +22,11 @@ import java.util.Map;
 public class EntityMapper {
 
     public EntityMapper() {
-        new CryptoConfig();
+        // Removed improper manual instantiation of CryptoConfig
     }
 
     public EncryptResponse toEncryptResponse(SecureEnvelope envelope, String encryptedEnvelope) {
         return new EncryptResponse(envelope.getMessageId(), encryptedEnvelope, envelope.getTimestamp());
-    }
-
-    public DecryptRequest toDecryptRequest(String envelope, String senderPublicKey) {
-        return new DecryptRequest(envelope, senderPublicKey);
     }
 
     public RSAKeyParameters toRSAPublicKey(byte[] publicKeyBytes) throws Exception {
@@ -57,23 +56,29 @@ public class EntityMapper {
     }
 
     public PublicKey toJavaPublicKey(RSAKeyParameters bcKey) throws Exception {
-        java.security.KeyFactory factory = java.security.KeyFactory.getInstance("RSA");
-        java.security.spec.RSAPublicKeySpec spec = new java.security.spec.RSAPublicKeySpec(bcKey.getModulus(), bcKey.getExponent());
+        KeyFactory factory = KeyFactory.getInstance("RSA");
+        RSAPublicKeySpec spec = new RSAPublicKeySpec(bcKey.getModulus(), bcKey.getExponent());
         return factory.generatePublic(spec);
     }
 
     public PrivateKey toJavaPrivateKey(RSAKeyParameters bcKey) throws Exception {
-        java.security.KeyFactory factory = java.security.KeyFactory.getInstance("RSA");
-        java.security.spec.RSAPrivateKeySpec spec = new java.security.spec.RSAPrivateKeySpec(bcKey.getModulus(), bcKey.getExponent());
+        KeyFactory factory = KeyFactory.getInstance("RSA");
+        RSAPrivateKeySpec spec = new RSAPrivateKeySpec(bcKey.getModulus(), bcKey.getExponent());
         return factory.generatePrivate(spec);
     }
 
     private RSAKeyParameters convertJavaToBCPublicKey(PublicKey publicKey) throws Exception {
+        if (!(publicKey instanceof java.security.interfaces.RSAPublicKey)) {
+            throw new IllegalArgumentException("Key is not an RSA public key: " + publicKey.getClass().getName());
+        }
         java.security.interfaces.RSAPublicKey rsaKey = (java.security.interfaces.RSAPublicKey) publicKey;
         return new RSAKeyParameters(false, rsaKey.getModulus(), rsaKey.getPublicExponent());
     }
 
     private RSAKeyParameters convertJavaToBCPrivateKey(PrivateKey privateKey) throws Exception {
+        if (!(privateKey instanceof java.security.interfaces.RSAPrivateKey)) {
+            throw new IllegalArgumentException("Key is not an RSA private key: " + privateKey.getClass().getName());
+        }
         java.security.interfaces.RSAPrivateKey rsaKey = (java.security.interfaces.RSAPrivateKey) privateKey;
         return new RSAKeyParameters(true, rsaKey.getModulus(), rsaKey.getPrivateExponent());
     }
@@ -91,17 +96,16 @@ public class EntityMapper {
     }
 
     public PartnerDto toPartnerDto(Partner partner) {
-        if (partner == null) return null;
+        if (partner == null)
+            return null;
         return new PartnerDto(
-            partner.getId(),
-            partner.getName(),
-            partner.getCustomerEd25519PublicKey(),
-            partner.getCustomerRsaPublicKey(),
-            partner.getKeyFingerprint(),
-            null, // internalKeystorePassword - never expose
-            partner.getKeystorePassword() != null, // active if has keystore password
-            partner.getCreatedAt() != null ? partner.getCreatedAt().toEpochMilli() : null,
-            partner.getUpdatedAt() != null ? partner.getUpdatedAt().toEpochMilli() : null
-        );
+                partner.getId(),
+                partner.getName(),
+                partner.getCustomerEd25519PublicKey(),
+                partner.getCustomerRsaPublicKey(),
+                partner.getKeyFingerprint(),
+                partner.getKeystorePassword() != null,
+                partner.getCreatedAt() != null ? partner.getCreatedAt().toEpochMilli() : null,
+                partner.getUpdatedAt() != null ? partner.getUpdatedAt().toEpochMilli() : null);
     }
 }

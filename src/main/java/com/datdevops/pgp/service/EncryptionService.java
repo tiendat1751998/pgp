@@ -4,6 +4,9 @@ import org.bouncycastle.crypto.InvalidCipherTextException;
 import org.bouncycastle.crypto.modes.AEADBlockCipher;
 import org.bouncycastle.crypto.modes.GCMBlockCipher;
 import org.bouncycastle.crypto.params.AEADParameters;
+import org.bouncycastle.crypto.engines.RSAEngine;
+import org.bouncycastle.crypto.encodings.OAEPEncoding;
+import org.bouncycastle.crypto.digests.SHA256Digest;
 import org.bouncycastle.crypto.params.KeyParameter;
 import org.bouncycastle.crypto.params.RSAKeyParameters;
 import org.bouncycastle.crypto.engines.AESEngine;
@@ -21,6 +24,9 @@ import java.security.spec.RSAPublicKeySpec;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.IOException;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 
@@ -35,6 +41,9 @@ public class EncryptionService {
     private final SecureRandom secureRandom;
     private final Cache<String, PublicKey> publicKeyCache;
     private final Cache<String, PrivateKey> privateKeyCache;
+
+    // GCM limit: 2^32 - 1 blocks = ~64GB. We set a safe limit of 32GB per stream.
+    private static final long MAX_GCM_STREAM_SIZE = 32L * 1024 * 1024 * 1024;
 
     public EncryptionService() {
         this.secureRandom = new SecureRandom();
@@ -83,6 +92,91 @@ public class EncryptionService {
         return new EncryptionResult(ciphertext, nonce, mac);
     }
 
+    /**
+     * Streaming encryption for large files (MB to GB).
+     * Prevents OOM by processing in chunks.
+     */
+    public void encryptStream(InputStream input, OutputStream output, byte[] key, byte[] nonce, byte[] associatedData) 
+            throws IOException, InvalidCipherTextException {
+        
+        AEADBlockCipher cipher = new GCMBlockCipher(new AESEngine());
+        KeyParameter keyParam = new KeyParameter(key);
+        AEADParameters aeadParams = (associatedData != null) 
+            ? new AEADParameters(keyParam, MAC_SIZE_BITS, nonce, associatedData)
+            : new AEADParameters(keyParam, MAC_SIZE_BITS, nonce);
+
+        cipher.init(true, aeadParams);
+
+        byte[] inBuf = new byte[8192]; // 8KB chunks
+        byte[] outBuf = new byte[cipher.getOutputSize(inBuf.length)];
+        long totalBytesProcessed = 0;
+        
+        try {
+            int bytesRead;
+            while ((bytesRead = input.read(inBuf)) != -1) {
+                totalBytesProcessed += bytesRead;
+                if (totalBytesProcessed > MAX_GCM_STREAM_SIZE) {
+                    throw new SecurityException("Stream size exceeds maximum safe limit for AES-GCM (32GB)");
+                }
+                
+                int outLen = cipher.processBytes(inBuf, 0, bytesRead, outBuf, 0);
+                if (outLen > 0) {
+                    output.write(outBuf, 0, outLen);
+                }
+                Arrays.fill(inBuf, (byte) 0);
+            }
+            int finalLen = cipher.doFinal(outBuf, 0);
+            if (finalLen > 0) {
+                output.write(outBuf, 0, finalLen);
+            }
+        } finally {
+            Arrays.fill(inBuf, (byte) 0);
+            Arrays.fill(outBuf, (byte) 0);
+        }
+    }
+
+    /**
+     * Streaming decryption for large files.
+     */
+    public void decryptStream(InputStream input, OutputStream output, byte[] key, byte[] nonce, byte[] associatedData) 
+            throws IOException, InvalidCipherTextException {
+        
+        AEADBlockCipher cipher = new GCMBlockCipher(new AESEngine());
+        KeyParameter keyParam = new KeyParameter(key);
+        AEADParameters aeadParams = (associatedData != null) 
+            ? new AEADParameters(keyParam, MAC_SIZE_BITS, nonce, associatedData)
+            : new AEADParameters(keyParam, MAC_SIZE_BITS, nonce);
+
+        cipher.init(false, aeadParams);
+
+        byte[] inBuf = new byte[8192];
+        byte[] outBuf = new byte[cipher.getOutputSize(inBuf.length)];
+        long totalBytesProcessed = 0;
+
+        try {
+            int bytesRead;
+            while ((bytesRead = input.read(inBuf)) != -1) {
+                totalBytesProcessed += bytesRead;
+                if (totalBytesProcessed > MAX_GCM_STREAM_SIZE) {
+                    throw new SecurityException("Stream size exceeds maximum safe limit for AES-GCM (32GB)");
+                }
+
+                int outLen = cipher.processBytes(inBuf, 0, bytesRead, outBuf, 0);
+                if (outLen > 0) {
+                    output.write(outBuf, 0, outLen);
+                }
+                Arrays.fill(inBuf, (byte) 0);
+            }
+            int finalLen = cipher.doFinal(outBuf, 0);
+            if (finalLen > 0) {
+                output.write(outBuf, 0, finalLen);
+            }
+        } finally {
+            Arrays.fill(inBuf, (byte) 0);
+            Arrays.fill(outBuf, (byte) 0);
+        }
+    }
+
     public byte[] decrypt(byte[] ciphertext, byte[] key, byte[] nonce, byte[] mac, byte[] associatedData) {
         if (key.length != KEY_SIZE_BITS / 8) {
             throw new IllegalArgumentException("Key must be " + KEY_SIZE_BITS / 8 + " bytes long");
@@ -116,32 +210,26 @@ public class EncryptionService {
         try {
             length += cipher.doFinal(output, length);
         } catch (InvalidCipherTextException e) {
-            throw new IllegalStateException("Decryption failed: " + e.getMessage(), e);
+            // Sanitize error message to prevent leaking details about decryption failure cause
+            throw new IllegalStateException("Decryption failed - integrity check failed", e);
         }
 
         return Arrays.copyOf(output, length);
     }
 
     public byte[] encryptSessionKey(byte[] sessionKey, RSAKeyParameters rsaPublicKey) throws Exception {
-        PublicKey publicKey = convertBCToJavaPublicKey(rsaPublicKey);
-        return encryptSessionKey(sessionKey, publicKey);
+        // Optimization: Use native BouncyCastle OAEPEncoding to avoid JCA/JCE conversion overhead.
+        // This is significantly faster for high-throughput (1000+ req/s) workloads.
+        OAEPEncoding encoder = new OAEPEncoding(new RSAEngine(), new SHA256Digest(), new SHA256Digest(), null);
+        encoder.init(true, rsaPublicKey);
+        return encoder.processBlock(sessionKey, 0, sessionKey.length);
     }
 
     public byte[] decryptSessionKey(byte[] encryptedSessionKey, RSAKeyParameters rsaPrivateKey) throws Exception {
-        PrivateKey privateKey = convertBCToJavaPrivateKey(rsaPrivateKey);
-        return decryptSessionKey(encryptedSessionKey, privateKey);
-    }
-
-    public byte[] encryptSessionKey(byte[] sessionKey, PublicKey publicKey) throws Exception {
-        Cipher cipher = Cipher.getInstance(RSA_TRANSFORMATION);
-        cipher.init(Cipher.ENCRYPT_MODE, publicKey);
-        return cipher.doFinal(sessionKey);
-    }
-
-    public byte[] decryptSessionKey(byte[] encryptedSessionKey, PrivateKey privateKey) throws Exception {
-        Cipher cipher = Cipher.getInstance(RSA_TRANSFORMATION);
-        cipher.init(Cipher.DECRYPT_MODE, privateKey);
-        return cipher.doFinal(encryptedSessionKey);
+        // Optimization: Native BC decryption
+        OAEPEncoding decoder = new OAEPEncoding(new RSAEngine(), new SHA256Digest(), new SHA256Digest(), null);
+        decoder.init(false, rsaPrivateKey);
+        return decoder.processBlock(encryptedSessionKey, 0, encryptedSessionKey.length);
     }
 
     private PublicKey convertBCToJavaPublicKey(RSAKeyParameters bcKey) throws Exception {

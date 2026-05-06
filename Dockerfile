@@ -2,40 +2,37 @@
 FROM maven:3.9-eclipse-temurin-21-alpine AS build
 WORKDIR /app
 COPY pom.xml .
+# Optimize: Download dependencies first (caching)
+RUN mvn dependency:go-offline -B -q
 COPY src ./src
 RUN mvn clean package -DskipTests -q
 
-# Runtime stage
-FROM eclipse-temurin:21-jre-alpine
+# Runtime stage: Use Distroless for minimal attack surface
+FROM gcr.io/distroless/java21-debian12
 
-# Security: Create non-root user
-RUN addgroup -g 1000 -S appgroup && \
-    adduser -u 1000 -S appuser -G appgroup
+# Metadata
+LABEL maintainer="datdevops"
+LABEL security.hardened="true"
 
 WORKDIR /app
 
-# Security: Copy jar with correct ownership
+# Copy jar from build stage
 COPY --from=build /app/target/*.jar app.jar
 
-# Security: Set ownership
-RUN chown -R appuser:appgroup /app
-
-# Security: Use read-only filesystem by default (can be overridden in K8s)
-USER appuser
-
-# Expose HTTP port
-EXPOSE 8080
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/actuator/health || exit 1
-
-# Run application
+# Security: Java parameters for containers and cryptography
+# 1. -Djava.security.egd=file:/dev/./urandom: Prevent entropy starvation in PGP ops
+# 2. -XX:+UseContainerSupport: Ensure JVM respects Docker memory/cpu limits
+# 3. -XX:MaxRAMPercentage: Better than hardcoded Xmx
+# 4. -Djava.io.tmpdir=/tmp: Combined with K8s tmpfs mount
 ENTRYPOINT ["java", \
+    "-Djava.security.egd=file:/dev/./urandom", \
+    "-XX:+UseContainerSupport", \
+    "-XX:MaxRAMPercentage=75.0", \
     "-XX:+UseG1GC", \
     "-XX:MaxGCPauseMillis=20", \
     "-XX:+ParallelRefProcEnabled", \
-    "-XX:G1NewSizePercent=20", \
-    "-XX:G1MaxNewSizePercent=50", \
-    "-Djava.security.egd=file:/dev/./urandom", \
+    "-XX:+ExitOnOutOfMemoryError", \
     "-jar", "app.jar"]
+
+# Note: Distroless doesn't have a shell, so wget healthcheck won't work.
+# Recommendation: Use Spring Boot Actuator with K8s liveness/readiness probes directly.

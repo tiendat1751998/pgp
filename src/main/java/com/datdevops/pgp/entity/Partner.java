@@ -3,6 +3,7 @@ package com.datdevops.pgp.entity;
 import jakarta.persistence.*;
 import com.datdevops.pgp.listener.EntityEncryptionListener;
 import com.datdevops.pgp.listener.Encrypted;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.Instant;
 
 /**
@@ -35,10 +36,12 @@ public class Partner {
 
     @Column(length = 1024)
     @Encrypted
+    @JsonIgnore
     private String keystorePassword;
 
     @Column(length = 2048)
     @Encrypted
+    @JsonIgnore
     private String adminEncryptedKeystorePassword;
 
     private Instant createdAt;
