@@ -88,7 +88,7 @@ public class EntityEncryptionListener {
     }
 
     private boolean isEncrypted(String value) {
-        if (value == null || value.isEmpty()) return false;
+        if (value == null || value.isBlank()) return false;
         return value.startsWith(ENCRYPTED_PREFIX);
     }
 }

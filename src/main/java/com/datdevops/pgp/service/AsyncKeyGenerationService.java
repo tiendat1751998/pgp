@@ -198,9 +198,11 @@ public class AsyncKeyGenerationService {
     }
 
     public String generateJobId() {
-        byte[] randomBytes = new byte[16];
+        // Fix Logic Bug #189: Use ONLY SecureRandom for entropy - no timestamps
+        // TIMESTAMP MAKES IDS PREDICTABLE! Attackers can enumerate job IDs.
+        byte[] randomBytes = new byte[24]; // 192 bits of entropy
         SECURE_RANDOM.nextBytes(randomBytes);
-        return "KEY-" + System.currentTimeMillis() + "-" + Base64.getEncoder().encodeToString(randomBytes).substring(0, 8);
+        return "KEY-" + Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes);
     }
 
     private boolean acquireJobSlot(String entityId) {
